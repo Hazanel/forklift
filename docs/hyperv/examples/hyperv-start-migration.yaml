@@ -1,0 +1,25 @@
+# Start HyperV Migration
+# Creates a Migration CR to start the migration defined in hyperv-migration-plan.yaml
+#
+# Prerequisites:
+#   - Plan "hyperv-migration" exists and is Ready
+#
+# Usage:
+#   oc apply -f hyperv-start-migration.yaml
+#   oc get migration hyperv-migration -n openshift-mtv -w
+
+---
+apiVersion: forklift.konveyor.io/v1beta1
+kind: Migration
+metadata:
+  name: hyperv-migration
+  namespace: openshift-mtv
+spec:
+  plan:
+    name: hyperv-migration
+    namespace: openshift-mtv
+
+
+
+
+

@@ -1,0 +1,42 @@
+# HyperV Migration Plan
+# Migrates VMs from HyperV provider to OpenShift Virtualization
+#
+# Prerequisites:
+#   - HyperV provider "hyperv-demo" is Ready
+#   - Network mapping "hyperv-netmap" exists
+#   - Storage mapping "hyperv-storagemap" exists
+#
+# Usage:
+#   oc apply -f hyperv-migration-plan.yaml
+#   oc patch migration hyperv-migration -n openshift-mtv --type=merge -p '{"spec":{"cutover":"2025-01-01T00:00:00Z"}}'
+
+---
+apiVersion: forklift.konveyor.io/v1beta1
+kind: Plan
+metadata:
+  name: hyperv-migration
+  namespace: openshift-mtv
+spec:
+  provider:
+    source:
+      name: hyperv-demo
+      namespace: openshift-mtv
+    destination:
+      name: host
+      namespace: openshift-mtv
+  map:
+    network:
+      name: hyperv-netmap
+      namespace: openshift-mtv
+    storage:
+      name: hyperv-storagemap
+      namespace: openshift-mtv
+  targetNamespace: openshift-mtv
+  warm: false
+  vms:
+    # Windows Server 2019 VM from HyperV export
+    # Get VM UUID from: curl -s http://localhost:8080/vms | jq '.[].UUID'
+    # (after port-forwarding to the hyperv provider pod)
+    - id: "e2559ed590e61ebf72f2d5f6d499cdc87343"
+      name: "v-2019"
+

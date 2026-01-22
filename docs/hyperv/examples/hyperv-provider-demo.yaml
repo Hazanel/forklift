@@ -1,0 +1,164 @@
+# HyperV Provider Demo Setup
+# This file contains all resources needed to create a HyperV provider in MTV
+#
+# Usage:
+#   1. Update the SMB share URL and credentials below
+#   2. Apply: oc apply -f hyperv-provider-demo.yaml
+#   3. Verify: oc get providers -n openshift-mtv
+#
+# Prerequisites:
+#   - MTV operator installed
+#   - SMB CSI driver operator installed
+#   - ForkliftController CR created
+#   - SMB share accessible from cluster with OVF files
+#
+# Custom Images (for development):
+#   The Job below patches the controller with a custom HyperV provider server image.
+#   If using custom forklift-api image (for finalizer fix), also patch:
+#     oc set image deployment/forklift-api -n openshift-mtv forklift-api=quay.io/ehazan/forklift-api:devel-amd64
+
+---
+# Job to patch the forklift-controller deployment with HYPERV_PROVIDER_SERVER_IMAGE
+# This is needed because the operator doesn't set this env var by default
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: patch-controller-hyperv-image
+  namespace: openshift-mtv
+spec:
+  ttlSecondsAfterFinished: 30
+  template:
+    spec:
+      serviceAccountName: forklift-controller
+      restartPolicy: Never
+      containers:
+        - name: patch
+          image: registry.redhat.io/openshift4/ose-cli:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Check if env var already exists
+              if oc get deployment forklift-controller -n openshift-mtv -o jsonpath='{.spec.template.spec.containers[?(@.name=="inventory")].env[?(@.name=="HYPERV_PROVIDER_SERVER_IMAGE")].value}' | grep -q .; then
+                echo "HYPERV_PROVIDER_SERVER_IMAGE already set"
+                exit 0
+              fi
+              # Add the env var
+              oc patch deployment forklift-controller -n openshift-mtv --type=json \
+                -p='[{"op":"add","path":"/spec/template/spec/containers/1/env/-","value":{"name":"HYPERV_PROVIDER_SERVER_IMAGE","value":"quay.io/ehazan/forklift-hyperv-provider-server:devel-amd64"}}]'
+              echo "Patched forklift-controller with HYPERV_PROVIDER_SERVER_IMAGE"
+
+---
+# Secret containing SMB credentials
+# The username and password are used by the SMB CSI driver to mount the share
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hyperv-credentials
+  namespace: openshift-mtv
+type: Opaque
+stringData:
+  # SMB credentials for Windows VM (winHyperV) at 192.168.122.115
+  # The Windows VM shares C:\Users\Public\Documents\Hyper-V\Virtual-Hard-Disks as "VMShare"
+  username: "Administrator"
+  password: "redhat123!"
+
+---
+# HyperV Provider
+# Points to an SMB share containing OVF/VHDX files exported from Hyper-V
+apiVersion: forklift.konveyor.io/v1beta1
+kind: Provider
+metadata:
+  name: hyperv-demo
+  namespace: openshift-mtv
+spec:
+  type: hyperv
+  # SMB share URL format: //server/share/path
+  # Windows VM (winHyperV) on libvirt NAT network: 192.168.122.115
+  # Share: VMShare -> C:\Users\Public\Documents\Hyper-V\Virtual-Hard-Disks
+  url: "//192.168.122.115/VMShare"
+  secret:
+    name: hyperv-credentials
+    namespace: openshift-mtv
+
+---
+# Network Mapping (Pod networking - simplest option)
+# Maps all source networks to OpenShift pod networking
+apiVersion: forklift.konveyor.io/v1beta1
+kind: NetworkMap
+metadata:
+  name: hyperv-netmap
+  namespace: openshift-mtv
+spec:
+  map:
+    - source:
+        # Use the network name from your OVF files
+        # Check with: oc exec -n openshift-mtv <hyperv-pod> -- cat /hyperv/<vm>.ovf | grep -i network
+        name: "Network Adapter"
+      destination:
+        type: pod
+  provider:
+    source:
+      name: hyperv-demo
+      namespace: openshift-mtv
+    destination:
+      name: host
+      namespace: openshift-mtv
+
+---
+# Storage Mapping
+# Maps source storage to OpenShift storage class
+apiVersion: forklift.konveyor.io/v1beta1
+kind: StorageMap
+metadata:
+  name: hyperv-storagemap
+  namespace: openshift-mtv
+spec:
+  map:
+    - source:
+        # Use the disk file name from your OVF (e.g., v-2019.vhdx)
+        # Check with: oc exec -n openshift-mtv <hyperv-pod> -- ls /hyperv/
+        name: "v-2019.vhdx"
+      destination:
+        # Use an available storage class in your cluster
+        # For CRC: crc-csi-hostpath-provisioner
+        # For production: ocs-storagecluster-ceph-rbd-virtualization or nfs-csi
+        storageClass: crc-csi-hostpath-provisioner
+  provider:
+    source:
+      name: hyperv-demo
+      namespace: openshift-mtv
+    destination:
+      name: host
+      namespace: openshift-mtv
+
+---
+# Example Migration Plan (commented out - customize VM names first)
+# Uncomment and update after provider is ready and VMs are inventoried
+#
+# apiVersion: forklift.konveyor.io/v1beta1
+# kind: Plan
+# metadata:
+#   name: hyperv-migration-demo
+#   namespace: openshift-mtv
+# spec:
+#   provider:
+#     source:
+#       name: hyperv-demo
+#       namespace: openshift-mtv
+#     destination:
+#       name: host
+#       namespace: openshift-mtv
+#   map:
+#     network:
+#       name: hyperv-netmap
+#       namespace: openshift-mtv
+#     storage:
+#       name: hyperv-storagemap
+#       namespace: openshift-mtv
+#   targetNamespace: openshift-mtv
+#   vms:
+#     # Update with actual VM IDs from inventory
+#     - id: "your-vm-uuid-here"
+#       name: "your-vm-name"
+

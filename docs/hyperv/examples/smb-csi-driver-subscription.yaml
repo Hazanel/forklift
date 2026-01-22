@@ -1,0 +1,39 @@
+# SMB CSI Driver Operator Installation
+# Required for HyperV provider to mount SMB shares
+#
+# Prerequisites:
+#   The namespace openshift-cluster-csi-drivers should already exist in OpenShift.
+#   If not, create it first: oc create namespace openshift-cluster-csi-drivers
+#
+# Apply with: oc apply -f smb-csi-driver-subscription.yaml
+#
+# Post-installation steps:
+#   1. Wait for the operator to be installed:
+#      oc get csv -n openshift-cluster-csi-drivers | grep smb
+#
+#   2. Add SMB CSI node SA to privileged SCC:
+#      oc adm policy add-scc-to-user privileged -z smb-csi-driver-node-sa -n openshift-cluster-csi-drivers
+#
+#   3. Verify SMB CSI is running:
+#      oc get pods -n openshift-cluster-csi-drivers | grep smb
+#      oc get csidrivers | grep smb
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: smb-csi-driver
+  namespace: openshift-cluster-csi-drivers
+spec:
+  channel: stable
+  name: smb-csi-driver-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+---
+# ClusterCSIDriver CR to enable the SMB CSI driver
+# This may be auto-created by the operator, but apply if needed
+apiVersion: operator.openshift.io/v1
+kind: ClusterCSIDriver
+metadata:
+  name: smb.csi.k8s.io
+spec:
+  managementState: Managed
