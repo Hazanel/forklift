@@ -61,7 +61,7 @@ $bytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509Content
 ## 3. Configure SMB Share for VHDX Access
 
 ```powershell
-New-SmbShare -Name "HyperVDisks" -Path "C:\Hyper-V\Virtual Hard Disks" -FullAccess "Administrator"
+New-SmbShare -Name "HyperVDisks" -Path "C:\Hyper-V\Virtual_Hard_Disks" -FullAccess "Administrator" (Better to have same credentials as hyperV)
 Get-SmbShare -Name "HyperVDisks"
 ```
 
