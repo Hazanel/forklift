@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Windows iSCSI Target — Full Migration Flow</title>
+<style>
+  body { margin: 0; background: #fff; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1060"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+
+function drawBox(x, y, w, h, opts = {}) {
+  ctx.save();
+  ctx.lineWidth = opts.lineWidth || 2;
+  ctx.strokeStyle = opts.stroke || '#000';
+  if (opts.dash) ctx.setLineDash(opts.dash);
+  if (opts.fill) { ctx.fillStyle = opts.fill; ctx.fillRect(x, y, w, h); }
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
+}
+
+function drawText(x, y, text, opts = {}) {
+  ctx.save();
+  ctx.fillStyle = opts.color || '#000';
+  ctx.font = (opts.bold ? 'bold ' : '') + (opts.italic ? 'italic ' : '') + (opts.size || 12) + 'px Arial, Helvetica, sans-serif';
+  ctx.textAlign = opts.align || 'left';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function drawArrow(x1, y1, x2, y2, opts = {}) {
+  ctx.save();
+  ctx.lineWidth = opts.lineWidth || 1.5;
+  ctx.strokeStyle = opts.stroke || '#000';
+  if (opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  if (opts.noHead) { ctx.restore(); return; }
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const hl = opts.headLen || 9;
+  ctx.fillStyle = opts.stroke || '#000';
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - hl * Math.cos(angle - 0.4), y2 - hl * Math.sin(angle - 0.4));
+  ctx.lineTo(x2 - hl * Math.cos(angle + 0.4), y2 - hl * Math.sin(angle + 0.4));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawDisk(cx, cy, rx, ry, h, opts = {}) {
+  const fill = opts.fill || '#fff';
+  const stroke = opts.stroke || '#000';
+  ctx.save();
+  ctx.lineWidth = opts.lineWidth || 1.5;
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.beginPath();
+  ctx.moveTo(cx - rx, cy); ctx.lineTo(cx - rx, cy + h);
+  ctx.ellipse(cx, cy + h, rx, ry, 0, Math.PI, 0, true);
+  ctx.lineTo(cx + rx, cy); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - rx, cy); ctx.lineTo(cx - rx, cy + h);
+  ctx.ellipse(cx, cy + h, rx, ry, 0, Math.PI, 0, true);
+  ctx.lineTo(cx + rx, cy);
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = fill; ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+function drawStep(x, y, num, color) {
+  ctx.save();
+  ctx.fillStyle = color || '#E74C3C';
+  ctx.beginPath(); ctx.arc(x, y, 13, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(num, x, y + 1);
+  ctx.restore();
+}
+
+function drawPolyArrow(points, opts = {}) {
+  ctx.save();
+  ctx.lineWidth = opts.lineWidth || 1.5;
+  ctx.strokeStyle = opts.stroke || '#000';
+  if (opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.stroke();
+  if (!opts.noHead) {
+    const last = points[points.length - 1];
+    const prev = points[points.length - 2];
+    const angle = Math.atan2(last[1] - prev[1], last[0] - prev[0]);
+    const hl = opts.headLen || 9;
+    ctx.fillStyle = opts.stroke || '#000';
+    ctx.beginPath();
+    ctx.moveTo(last[0], last[1]);
+    ctx.lineTo(last[0] - hl * Math.cos(angle - 0.4), last[1] - hl * Math.sin(angle - 0.4));
+    ctx.lineTo(last[0] - hl * Math.cos(angle + 0.4), last[1] - hl * Math.sin(angle + 0.4));
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ========== CANVAS ==========
+ctx.fillStyle = '#fff';
+ctx.fillRect(0, 0, 1080, 1060);
+
+// ========== TITLE ==========
+drawText(20, 28, 'Windows iSCSI Target \u2014 Full Migration Flow', {size: 20, bold: true});
+
+// ========== WINDOWS NODE ==========
+drawBox(20, 82, 340, 530);
+drawText(110, 102, 'Windows Node', {size: 14, bold: true});
+drawText(85, 118, '(Hyper-V Host)', {size: 11, italic: true, color: '#555'});
+
+// VM box (initially running, then powered off)
+drawBox(40, 132, 210, 100);
+drawText(100, 150, 'Source VM', {size: 11, bold: true});
+drawDisk(95, 165, 36, 9, 18);
+drawText(78, 181, 'VHDX-0', {size: 10});
+drawDisk(180, 165, 36, 9, 18);
+drawText(163, 181, 'VHDX-1', {size: 10});
+drawText(70, 222, '(powered off in step 1)', {size: 9, italic: true, color: '#777'});
+
+// NTFS
+drawBox(40, 242, 210, 26, {fill: '#eee', stroke: '#999'});
+drawText(105, 260, 'NTFS volume', {size: 10});
+
+// Lines from VHDXs to NTFS
+drawArrow(95, 193, 95, 242, {noHead: true});
+drawArrow(180, 193, 180, 242, {noHead: true});
+
+// Install iSCSI Target role
+drawBox(40, 285, 300, 34, {fill: '#EBF5FB', stroke: '#2E86C1', lineWidth: 1.5});
+drawStep(55, 302, '2', '#2E86C1');
+drawText(75, 307, 'Install-WindowsFeature FS-iSCSITarget-Server', {size: 10});
+
+// iSCSI Target Server box
+drawBox(40, 332, 300, 120, {lineWidth: 2.5, fill: '#FEF9E7', stroke: '#F39C12'});
+drawStep(55, 352, '3', '#F39C12');
+drawText(75, 357, 'iSCSI Target Server', {size: 13, bold: true});
+drawText(55, 375, '(built-in Windows Server role)', {size: 10, italic: true, color: '#555'});
+drawText(55, 398, 'LUN 0 \u2190 VHDX-0 (BAT translated, flat block I/O)', {size: 10});
+drawText(55, 414, 'LUN 1 \u2190 VHDX-1 (BAT translated, flat block I/O)', {size: 10});
+drawText(55, 434, 'IQN-based Initiator ACL (per-migration)', {size: 9, italic: true, color: '#777'});
+
+// Lines from NTFS to iSCSI target
+drawArrow(140, 268, 140, 332);
+
+// Cleanup note
+drawBox(40, 465, 300, 40, {dash: [4, 3], stroke: '#999'});
+drawStep(55, 485, '7', '#999');
+drawText(75, 490, 'Remove-IscsiServerTarget (WinRM cleanup)', {size: 10, color: '#777'});
+drawText(55, 500, 'Targets removed after copy completes', {size: 9, italic: true, color: '#999'});
+
+// WinRM port annotation
+drawText(40, 575, 'Requires: WinRM (5985/5986), TCP 3260 (iSCSI)', {size: 9, italic: true, color: '#555'});
+drawText(40, 590, 'No SMB CSI driver needed. No provider-server pod needed.', {size: 9, italic: true, color: '#555'});
+
+// ========== OPENSHIFT NODE ==========
+drawBox(420, 82, 640, 530);
+drawText(660, 102, 'OpenShift Node', {size: 14, bold: true});
+
+// MTV controller box
+drawBox(640, 124, 120, 42);
+drawText(668, 150, 'MTV', {size: 14, bold: true});
+
+// WinRM arrow (PowerOff)
+drawStep(565, 135, '1', '#E74C3C');
+drawArrow(640, 145, 365, 145, {lineWidth: 1.5});
+drawText(393, 138, 'WinRM', {size: 11, bold: true});
+drawText(380, 155, 'PowerOff + iSCSI setup', {size: 9, italic: true, color: '#555'});
+
+// MTV orchestration arrows (dashed)
+// MTV -> iSCSI setup on Windows
+drawPolyArrow([[640, 155], [580, 155], [580, 300], [345, 300]], {dash: [5, 3], stroke: '#2E86C1'});
+drawText(440, 290, 'install feature + create targets', {size: 9, italic: true, color: '#2E86C1'});
+
+// MTV -> create copy pod
+drawPolyArrow([[700, 166], [700, 210], [520, 210], [520, 295]], {dash: [5, 3], stroke: '#555'});
+drawStep(520, 270, '4', '#555');
+drawText(535, 275, 'create blank PVCs +', {size: 9, italic: true, color: '#555'});
+drawText(535, 288, 'copy pod', {size: 9, italic: true, color: '#555'});
+
+// ========== COPY POD ==========
+drawBox(440, 310, 240, 120, {lineWidth: 2, fill: '#fff'});
+drawStep(455, 330, '5', '#E74C3C');
+drawText(475, 334, 'hyperv-populator Pod', {size: 13, bold: true});
+drawText(455, 358, '1. iscsiadm discovery + login', {size: 10});
+drawText(455, 374, '2. Wait for /dev/sdX to appear', {size: 10});
+drawText(455, 390, '3. dd if=/dev/sdX of=/dev/target bs=4M', {size: 10});
+drawText(455, 406, '4. iscsiadm logout', {size: 10});
+drawText(455, 422, 'Prometheus progress metric on :8443', {size: 9, italic: true, color: '#777'});
+
+// iSCSI data arrow from Windows iSCSI Target to copy pod
+drawArrow(340, 392, 440, 370, {lineWidth: 3.5, stroke: '#E74C3C'});
+drawText(350, 365, 'iSCSI', {size: 13, bold: true, color: '#E74C3C'});
+drawText(345, 382, 'TCP:3260', {size: 10, color: '#E74C3C'});
+drawText(345, 398, '(block I/O)', {size: 9, italic: true, color: '#E74C3C'});
+
+// Destination PVCs
+drawDisk(780, 310, 45, 11, 26, {fill: '#FDEBD0', stroke: '#E67E22'});
+drawText(753, 330, 'destination', {size: 10});
+drawText(764, 344, 'PVC-0', {size: 10, bold: true});
+
+drawDisk(780, 380, 45, 11, 26, {fill: '#FDEBD0', stroke: '#E67E22'});
+drawText(753, 400, 'destination', {size: 10});
+drawText(764, 414, 'PVC-1', {size: 10, bold: true});
+
+// Arrows from copy pod to PVCs
+drawArrow(680, 345, 735, 330, {lineWidth: 1.5});
+drawArrow(680, 385, 735, 395, {lineWidth: 1.5});
+drawText(690, 322, 'dd / qemu-img', {size: 9});
+
+// v2v-in-place box
+drawBox(860, 350, 170, 60, {lineWidth: 2, fill: '#F5EEF8', stroke: '#8E44AD'});
+drawStep(875, 375, '6', '#8E44AD');
+drawText(895, 375, 'v2v-in-place', {size: 13, bold: true});
+drawText(880, 396, '(guest conversion only:', {size: 9, italic: true, color: '#555'});
+drawText(880, 408, ' drivers + bootloader)', {size: 9, italic: true, color: '#555'});
+
+// Arrows from v2v-in-place to PVCs
+drawArrow(860, 370, 828, 340);
+drawArrow(860, 390, 828, 400);
+
+// KubeVirt VM
+drawBox(740, 460, 160, 42, {lineWidth: 2, fill: '#D5F5E3', stroke: '#27AE60'});
+drawStep(755, 481, '8', '#27AE60');
+drawText(775, 486, 'KubeVirt VM', {size: 13, bold: true, color: '#27AE60'});
+
+// Arrow from PVCs to VM
+drawArrow(780, 416, 800, 460, {stroke: '#27AE60', lineWidth: 1.5});
+
+// Performance comparison note
+drawText(440, 530, 'Copy: pure sequential block I/O (no nested QEMU VM, no VHDX parsing on Linux)', {size: 10, italic: true, color: '#555'});
+drawText(440, 546, 'Conversion: v2v-in-place modifies PVC in place (2\u201315 min, disk-size independent)', {size: 10, italic: true, color: '#555'});
+drawText(440, 562, 'Total: 2\u20135x faster than current SMB + virt-v2v for typical migrations', {size: 10, bold: true, color: '#2E86C1'});
+
+// ========== STEP-BY-STEP SUMMARY ==========
+drawBox(20, 620, 1040, 150, {fill: '#f8f8f8', stroke: '#ccc', lineWidth: 1});
+drawText(35, 642, 'Step-by-step flow:', {size: 13, bold: true});
+
+drawStep(50, 668, '1', '#E74C3C');
+drawText(70, 673, 'MTV powers off source VM via WinRM (Stop-VM)', {size: 11});
+
+drawStep(530, 668, '2', '#2E86C1');
+drawText(550, 673, 'Admin prerequisite: iSCSI Target role + firewall TCP 3260', {size: 11});
+
+drawStep(50, 698, '3', '#F39C12');
+drawText(70, 703, 'MTV creates iSCSI targets + virtual disks via WinRM (one target per VM, one LUN per VHDX, IQN-based initiator ACL)', {size: 11});
+
+drawStep(50, 728, '4', '#555');
+drawText(70, 733, 'MTV creates blank PVCs (CDI DataVolumes) on OpenShift + launches copy pod', {size: 11});
+
+drawStep(530, 728, '5', '#E74C3C');
+drawText(550, 733, 'Copy pod: iscsiadm login \u2192 dd /dev/sdX \u2192 PVC \u2192 iscsiadm logout', {size: 11});
+
+drawStep(50, 758, '6', '#8E44AD');
+drawText(70, 763, 'v2v-in-place runs on PVCs: guest conversion only (driver injection, bootloader fixup, no data copy)', {size: 11});
+
+// ========== MIGRATION PHASES ==========
+drawBox(20, 780, 1040, 55, {fill: '#fff', stroke: '#ccc', lineWidth: 1});
+drawText(35, 800, 'Forklift itinerary phases:', {size: 11, bold: true});
+drawText(35, 820, 'PowerOff \u2192 WaitForPowerOff \u2192 SetupIscsiTargets \u2192 CreateDataVolumes \u2192 AllocateDisks \u2192 CopyDisksIscsi \u2192 CleanupIscsiTargets \u2192 ConvertGuest \u2192 CreateVM', {size: 10, color: '#333'});
+
+// ========== KEY ADVANTAGES ==========
+drawBox(20, 848, 1040, 100, {stroke: '#ccc', lineWidth: 1});
+drawText(40, 868, 'Key advantages:', {size: 12, bold: true});
+drawText(40, 888, '\u2022  No ntfs-3g \u2014 Windows natively translates VHDX BAT and serves flat block I/O via iSCSI (initiator sees raw guest disk)', {size: 11});
+drawText(40, 906, '\u2022  No appliance VM \u2014 built-in Windows Server iSCSI Target role; one PowerShell command to install; no MTV software on Hyper-V host', {size: 11});
+drawText(40, 924, '\u2022  No storage array dependency \u2014 works with local disk, SAN, NAS, S2D \u2014 any Hyper-V deployment; no SMB CSI driver needed', {size: 11});
+drawText(40, 942, '\u2022  Enterprise security \u2014 per-migration IQN-based initiator ACL (FIPS-safe, no MD5), short-lived targets auto-cleaned', {size: 11});
+
+// ========== PERFORMANCE COMPARISON ==========
+drawBox(20, 958, 1040, 90, {stroke: '#2E86C1', lineWidth: 1.5});
+drawText(40, 978, 'Performance comparison (estimated, 10 Gbps network):', {size: 12, bold: true, color: '#2E86C1'});
+
+drawText(40, 1000, '50 GB disk:', {size: 11, bold: true});
+drawText(130, 1000, 'SMB+virt-v2v: 12\u201325 min', {size: 11, color: '#999'});
+drawText(325, 1000, 'iSCSI+dd: 2\u20134 min copy + 2\u20135 min v2v-in-place', {size: 11, color: '#E74C3C'});
+drawText(690, 1000, '\u2248 3x faster', {size: 11, bold: true, color: '#27AE60'});
+
+drawText(40, 1020, '500 GB disk:', {size: 11, bold: true});
+drawText(130, 1020, 'SMB+virt-v2v: 2\u20134 hours', {size: 11, color: '#999'});
+drawText(325, 1020, 'iSCSI+dd: 17\u201340 min copy + 5\u201310 min v2v-in-place', {size: 11, color: '#E74C3C'});
+drawText(690, 1020, '\u2248 4x faster', {size: 11, bold: true, color: '#27AE60'});
+
+drawText(40, 1040, '1 TB disk:', {size: 11, bold: true});
+drawText(130, 1040, 'SMB+virt-v2v: 4\u20138 hours', {size: 11, color: '#999'});
+drawText(325, 1040, 'iSCSI+dd: 35\u201380 min copy + 5\u201315 min v2v-in-place', {size: 11, color: '#E74C3C'});
+drawText(690, 1040, '\u2248 5x faster', {size: 11, bold: true, color: '#27AE60'});
+</script>
+</body>
+</html>

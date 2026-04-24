@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hyper-V iSCSI Migration — Interactive Component Diagram</title>
+<style>
+  body { margin: 0; background: #fff; font-family: Arial, Helvetica, sans-serif; }
+  #wrap { display: flex; flex-direction: column; }
+  canvas { display: block; cursor: pointer; }
+  #detail { min-height: 60px; padding: 16px 24px; border-top: 1px solid #ddd; background: #fafafa; }
+  #detail.empty { color: #999; font-size: 13px; font-style: italic; }
+  .d-title { font-size: 15px; font-weight: bold; margin-bottom: 6px; }
+  .d-pill { display: inline-block; font-size: 10px; padding: 2px 10px; border-radius: 10px; color: #fff; font-weight: 600; margin-left: 8px; vertical-align: middle; }
+  .d-body { font-size: 13px; line-height: 1.6; color: #333; }
+  .d-row { margin-top: 6px; }
+  .d-label { font-weight: 600; font-size: 12px; }
+  .d-val { font-size: 12px; color: #555; }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; background: #eee; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="c"></canvas>
+<div id="detail" class="empty">Click any numbered step or component box to see details.</div>
+</div>
+
+<script>
+const W = 1000, H = 760;
+const c = document.getElementById('c');
+const dpr = window.devicePixelRatio || 1;
+c.width = W * dpr;
+c.height = H * dpr;
+c.style.width = W + 'px';
+c.style.height = H + 'px';
+const ctx = c.getContext('2d');
+ctx.scale(dpr, dpr);
+
+function drawBox(x,y,w,h,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  if(opts.fill){ctx.fillStyle=opts.fill;ctx.fillRect(x,y,w,h);}
+  ctx.strokeRect(x,y,w,h);
+  ctx.restore();
+}
+function drawText(x,y,text,opts={}){
+  ctx.save();
+  ctx.fillStyle=opts.color||'#000';
+  ctx.font=(opts.bold?'bold ':'')+(opts.italic?'italic ':'')+(opts.size||12)+'px Arial, Helvetica, sans-serif';
+  ctx.textAlign=opts.align||'left';
+  ctx.fillText(text,x,y);
+  ctx.restore();
+}
+function drawArrow(x1,y1,x2,y2,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  if(!opts.noHead){
+    const angle=Math.atan2(y2-y1,x2-x1),hl=opts.headLen||8;
+    ctx.fillStyle=opts.stroke||'#000';
+    ctx.beginPath();ctx.moveTo(x2,y2);
+    ctx.lineTo(x2-hl*Math.cos(angle-0.4),y2-hl*Math.sin(angle-0.4));
+    ctx.lineTo(x2-hl*Math.cos(angle+0.4),y2-hl*Math.sin(angle+0.4));
+    ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+}
+function drawPolyArrow(pts,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.stroke();
+  if(!opts.noHead){
+    const last=pts[pts.length-1],prev=pts[pts.length-2];
+    const angle=Math.atan2(last[1]-prev[1],last[0]-prev[0]),hl=opts.headLen||8;
+    ctx.fillStyle=opts.stroke||'#000';
+    ctx.beginPath();ctx.moveTo(last[0],last[1]);
+    ctx.lineTo(last[0]-hl*Math.cos(angle-0.4),last[1]-hl*Math.sin(angle-0.4));
+    ctx.lineTo(last[0]-hl*Math.cos(angle+0.4),last[1]-hl*Math.sin(angle+0.4));
+    ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+}
+function drawDisk(cx,cy,rx,ry,h,opts={}){
+  const fill=opts.fill||'#fff',stroke=opts.stroke||'#000';
+  ctx.save();ctx.lineWidth=opts.lineWidth||1.5;ctx.fillStyle=fill;ctx.strokeStyle=stroke;
+  ctx.beginPath();ctx.moveTo(cx-rx,cy);ctx.lineTo(cx-rx,cy+h);
+  ctx.ellipse(cx,cy+h,rx,ry,0,Math.PI,0,true);ctx.lineTo(cx+rx,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx-rx,cy);ctx.lineTo(cx-rx,cy+h);
+  ctx.ellipse(cx,cy+h,rx,ry,0,Math.PI,0,true);ctx.lineTo(cx+rx,cy);
+  ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI,true);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);ctx.fillStyle=fill;ctx.fill();ctx.stroke();
+  ctx.restore();
+}
+function drawStep(x,y,num,color){
+  ctx.save();
+  ctx.fillStyle=color||'#E74C3C';
+  ctx.beginPath();ctx.arc(x,y,12,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font='bold 12px Arial';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(num,x,y+0.5);
+  ctx.restore();
+}
+
+const hitAreas = [];
+function addHit(x,y,w,h,id){ hitAreas.push({x,y,w,h,id}); }
+function addCircleHit(cx,cy,r,id){ hitAreas.push({x:cx-r,y:cy-r,w:r*2,h:r*2,id}); }
+
+const details = {
+  sourcevm: {
+    title:'Source VM', pill:'Hyper-V Host', pillColor:'#555',
+    body:'The original Windows VM running on the Hyper-V host. Contains one or more VHDX virtual disks stored on an NTFS volume.',
+    notes:'VM must be powered off before migration. VHDXs are exposed via iSCSI \u2014 the Windows iSCSI Target Server translates VHDX BAT internally, so the iSCSI initiator sees a flat raw block device.'
+  },
+  step1: {
+    title:'Step 1 \u2014 Power Off VM + iSCSI Setup', pill:'Step 1', pillColor:'#E74C3C',
+    body:'Plan Controller connects to the Hyper-V host via WinRM and powers off the source VM. Then PreTransferActions() creates the iSCSI target, differencing VHDXs, LUN mappings, and ACLs.',
+    files:['pkg/controller/plan/adapter/hyperv/client.go:179-276','pkg/lib/hyperv/iscsi/target.go:115-303'],
+    notes:'WinRM connects over HTTPS (port 5986). The differencing VHDX is a read-only snapshot so the original disk is never modified.'
+  },
+  step2: {
+    title:'Step 2 \u2014 Install iSCSI Target Feature', pill:'Step 2', pillColor:'#2E86C1',
+    body:'The Windows iSCSI Target Server role must be installed on the Hyper-V host. Validated during provider creation \u2014 forklift checks via WinRM that the feature is present and port 3260 is listening.',
+    files:['pkg/controller/provider/validation.go:1270-1365','pkg/controller/provider/container/hyperv/client.go:752+'],
+    notes:'One-time admin prerequisite: Install-WindowsFeature FS-iSCSITarget-Server. Also requires TCP 3260 open in the Windows firewall.'
+  },
+  step3: {
+    title:'Step 3 \u2014 iSCSI Target Server', pill:'Step 3', pillColor:'#F39C12',
+    body:'The Windows iSCSI Target Server (built-in Windows Server role) serves the VM disks as iSCSI LUNs. Each VHDX becomes a LUN \u2014 Windows internally translates the VHDX Block Allocation Table so the initiator sees flat sequential block I/O.',
+    files:['pkg/lib/hyperv/iscsi/target.go:115-175'],
+    notes:'One target per VM, one LUN per VHDX. ACL uses IQN-based initiator authentication (per-migration unique IQN generated by forklift).'
+  },
+  iscsiarrow: {
+    title:'iSCSI Data Path \u2014 TCP 3260', pill:'Data Plane', pillColor:'#E74C3C',
+    body:'The main data transfer path. The populator pod (running with hostNetwork on the OpenShift worker node) connects to the Hyper-V iSCSI target over TCP 3260. Pure block-level I/O \u2014 no file-level protocol overhead.',
+    notes:'The worker node\'s iSCSI initiator (iscsid) handles the TCP session. A per-session iface binds the forklift-generated initiator IQN to match the ACL.'
+  },
+  step4: {
+    title:'Step 4 \u2014 Create PVCs + Populator Pod', pill:'Step 4', pillColor:'#555',
+    body:'Plan Controller creates a HyperVVolumePopulator CR (with target IQN, portal, initiator IQN, LUN ID) and a PVC with dataSourceRef pointing to it. The populator-controller watches the PVC and spawns the populator pod.',
+    files:['pkg/controller/plan/adapter/hyperv/builder.go:644-727','cmd/populator-controller/populator-controller.go:59-201'],
+    notes:'Pod is privileged with hostNetwork, hostPID, and /dev mounted at /host-dev.'
+  },
+  step5: {
+    title:'Step 5 \u2014 hyperv-populator Pod', pill:'Step 5', pillColor:'#E74C3C',
+    body:'The populator pod runs the full iSCSI initiator flow:\n1. Use the host\'s iscsid daemon (via host mount namespace)\n2. Create a per-session iSCSI interface binding the forklift initiator IQN\n3. Register the target address in the local iSCSI initiator database\n4. Log in to the target (TCP 3260) \u2014 kernel creates /dev/sdX\n5. Copy with dd (bs=8M, direct I/O) from /dev/sdX to PVC\n6. Log out and clean up iface + node record',
+    files:['cmd/hyperv-populator/main.go'],
+    notes:'Direct I/O bypasses the Linux page cache. Prometheus progress gauge on HTTPS :8443 is scraped by the populator-controller.'
+  },
+  step6: {
+    title:'Step 6 \u2014 virt-v2v-in-place', pill:'Step 6', pillColor:'#8E44AD',
+    body:'Guest conversion: virt-v2v-in-place modifies the PVC contents in place \u2014 installs VirtIO drivers, fixes the bootloader, adjusts the Windows registry. No data copy \u2014 operates directly on the already-populated PVC.',
+    files:['pkg/controller/plan/kubevirt.go:2221-2226','pkg/virt-v2v/conversion/conversion.go:163-192'],
+    notes:'For iSCSI, conversion is in-place (not the copy-based virt-v2v path). Typically 2\u201315 min regardless of disk size.'
+  },
+  step7: {
+    title:'Step 7 \u2014 Cleanup iSCSI Targets', pill:'Step 7', pillColor:'#999',
+    body:'After the disk copy and conversion complete, Finalize() connects to the Hyper-V host via WinRM and removes the iSCSI target and cleans up the differencing VHDXs. The original VM disk is untouched.',
+    files:['pkg/controller/plan/adapter/hyperv/client.go:62-83','pkg/lib/hyperv/iscsi/target.go:305-318'],
+    notes:'Cleanup is best-effort \u2014 if WinRM fails, targets remain but are harmless (initiator ACL prevents unauthorized access).'
+  },
+  step8: {
+    title:'Step 8 \u2014 KubeVirt VM', pill:'Step 8', pillColor:'#27AE60',
+    body:'The final VirtualMachine CR is created with the populated PVCs as disks. PVC ownerReferences are patched to point to the VM. Migration status is set to Succeeded. The VM boots on OpenShift Virtualization.',
+    files:['pkg/controller/plan/kubevirt.go:510-572']
+  },
+  pvc: {
+    title:'Destination PVCs', pill:'Kubernetes', pillColor:'#E67E22',
+    body:'PersistentVolumeClaims created with dataSourceRef \u2192 HyperVVolumePopulator CR. After the populator pod completes, the prime-PVC is rebound to the original PVC. Contains the full raw disk image.',
+    files:['pkg/controller/plan/adapter/hyperv/builder.go:681-727']
+  },
+  progress: {
+    title:'Progress Reporting', pill:'Metrics', pillColor:'#777',
+    body:'The populator pod serves a Prometheus gauge (progress{ownerUID}) on HTTPS :8443 with a self-signed certificate. The populator-controller scrapes this endpoint using PodIP and updates the HyperVVolumePopulator CR status.progress field.',
+    files:['cmd/hyperv-populator/main.go:70-77','pkg/lib-volume-populator/populator-machinery/controller.go:1200-1224']
+  },
+  mtv: {
+    title:'MTV (Plan Controller)', pill:'Controller', pillColor:'#555',
+    body:'The forklift Plan Controller orchestrates the entire migration. It validates the plan, drives migration phases, creates populator CRs and PVCs, launches virt-v2v pods, and creates the final KubeVirt VM.',
+    files:['pkg/controller/plan/controller.go:377-491','pkg/controller/plan/migration.go']
+  }
+};
+
+let selected = null;
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+  hitAreas.length = 0;
+
+  // Title
+  drawText(18,26,'Hyper-V iSCSI Migration \u2014 Interactive Component Diagram',{size:18,bold:true});
+  drawText(18,44,'Click any numbered step or component to see details',{size:10,italic:true,color:'#888'});
+
+  // ===== HYPER-V HOST =====
+  drawBox(18,58,310,460);
+  drawText(105,76,'Hyper-V Host',{size:13,bold:true});
+  drawText(88,92,'(Windows Server)',{size:10,italic:true,color:'#555'});
+
+  // Source VM
+  const vmSel = selected==='sourcevm';
+  drawBox(34,104,194,96,{fill:vmSel?'#e8f4fd':'#fff',stroke:vmSel?'#2E86C1':'#000',lineWidth:vmSel?2.5:1.5});
+  drawText(92,120,'Source VM',{size:11,bold:true});
+  drawDisk(82,134,32,8,16);
+  drawText(66,148,'VHDX-0',{size:9});
+  drawDisk(158,134,32,8,16);
+  drawText(142,148,'VHDX-1',{size:9});
+  drawText(62,192,'(powered off in step 1)',{size:8,italic:true,color:'#777'});
+  addHit(34,104,194,96,'sourcevm');
+
+  // NTFS
+  drawBox(34,210,194,22,{fill:'#eee',stroke:'#999',lineWidth:1});
+  drawText(96,226,'NTFS volume',{size:9});
+  drawArrow(82,166,82,210,{noHead:true,lineWidth:1});
+  drawArrow(158,166,158,210,{noHead:true,lineWidth:1});
+
+  // Step 2
+  const s2Sel = selected==='step2';
+  drawBox(34,244,280,28,{fill:s2Sel?'#d4edfc':'#EBF5FB',stroke:'#2E86C1',lineWidth:s2Sel?2.5:1.2});
+  drawStep(50,258,'2','#2E86C1');
+  drawText(68,262,'Install-WindowsFeature FS-iSCSITarget-Server',{size:9});
+  addCircleHit(50,258,14,'step2');
+  addHit(34,244,280,28,'step2');
+
+  // Step 3: iSCSI Target Server
+  const s3Sel = selected==='step3';
+  drawBox(34,284,280,106,{lineWidth:s3Sel?3:2,fill:s3Sel?'#fdf2d0':'#FEF9E7',stroke:'#F39C12'});
+  drawStep(50,304,'3','#F39C12');
+  drawText(68,308,'iSCSI Target Server',{size:12,bold:true});
+  drawText(46,326,'(built-in Windows Server role)',{size:9,italic:true,color:'#555'});
+  drawText(46,346,'LUN 0 \u2190 VHDX-0 (BAT translated, flat block I/O)',{size:9});
+  drawText(46,362,'LUN 1 \u2190 VHDX-1 (BAT translated, flat block I/O)',{size:9});
+  drawText(46,380,'IQN-based Initiator ACL (per-migration)',{size:8,italic:true,color:'#777'});
+  addCircleHit(50,304,14,'step3');
+  addHit(34,284,280,106,'step3');
+
+  drawArrow(130,232,130,284,{lineWidth:1});
+
+  // Step 7: Cleanup
+  const s7Sel = selected==='step7';
+  drawBox(34,404,280,40,{dash:s7Sel?null:[4,3],stroke:s7Sel?'#555':'#999',lineWidth:s7Sel?2:1.2});
+  drawStep(50,424,'7','#999');
+  drawText(68,420,'Remove-IscsiServerTarget (WinRM cleanup)',{size:9,color:'#777'});
+  drawText(46,436,'Targets + diff VHDXs removed after copy',{size:8,italic:true,color:'#999'});
+  addCircleHit(50,424,14,'step7');
+  addHit(34,404,280,40,'step7');
+
+  drawText(34,498,'Requires: WinRM (5986), TCP 3260 (iSCSI)',{size:8,italic:true,color:'#555'});
+  drawText(34,512,'No SMB share needed. No provider-server pod needed.',{size:8,italic:true,color:'#555'});
+
+  // ===== OPENSHIFT NODE =====
+  drawBox(378,58,604,460);
+  drawText(610,76,'OpenShift Node',{size:13,bold:true});
+
+  // MTV Controller
+  const mtvSel = selected==='mtv';
+  drawBox(598,96,130,42,{fill:mtvSel?'#e8e8e8':'#fff',lineWidth:mtvSel?2.5:1.5});
+  drawText(618,122,'MTV Controller',{size:12,bold:true});
+  addHit(598,96,130,42,'mtv');
+
+  // Step 1: WinRM arrow
+  drawStep(534,112,'1','#E74C3C');
+  drawArrow(598,117,333,117,{lineWidth:1.5});
+  drawText(353,108,'WinRM',{size:10,bold:true});
+  drawText(338,128,'PowerOff + iSCSI setup',{size:8,italic:true,color:'#555'});
+  addCircleHit(534,112,14,'step1');
+
+  // MTV -> iSCSI setup dashed
+  drawPolyArrow([[598,128],[540,128],[540,258],[318,258]],{dash:[4,3],stroke:'#2E86C1',lineWidth:1.2});
+  drawText(404,248,'install feature + create targets',{size:8,italic:true,color:'#2E86C1'});
+
+  // Step 4: MTV -> create pod
+  drawPolyArrow([[663,138],[663,180],[490,180],[490,258]],{dash:[4,3],stroke:'#555',lineWidth:1.2});
+  drawStep(490,240,'4','#555');
+  drawText(506,238,'create PVCs +',{size:8,italic:true,color:'#555'});
+  drawText(506,250,'populator pod',{size:8,italic:true,color:'#555'});
+  addCircleHit(490,240,14,'step4');
+
+  // ===== hyperv-populator Pod =====
+  const s5Sel = selected==='step5';
+  drawBox(410,274,230,114,{lineWidth:s5Sel?2.5:1.5,fill:s5Sel?'#e8f8e8':'#fff',stroke:s5Sel?'#27AE60':'#000'});
+  drawStep(428,294,'5','#E74C3C');
+  drawText(446,298,'hyperv-populator Pod',{size:12,bold:true});
+  drawText(422,318,'1. Use host iSCSI initiator (iscsid)',{size:9});
+  drawText(422,334,'2. Create per-session iSCSI interface',{size:9});
+  drawText(422,350,'3. Register target in initiator database',{size:9});
+  drawText(422,366,'4. iSCSI login \u2192 /dev/sdX appears',{size:9});
+  drawText(422,382,'5. dd copy (direct I/O) \u2192 PVC',{size:9});
+  addCircleHit(428,294,14,'step5');
+  addHit(410,274,230,114,'step5');
+
+  // Progress note
+  const prSel = selected==='progress';
+  drawText(422,393,'Prometheus progress metric on :8443',{size:8,italic:true,color:prSel?'#333':'#777'});
+  addHit(410,386,230,12,'progress');
+
+  // iSCSI data arrow
+  const iscsiSel = selected==='iscsiarrow';
+  drawArrow(314,340,410,326,{lineWidth:iscsiSel?4:3,stroke:'#E74C3C'});
+  drawText(324,316,'iSCSI',{size:12,bold:true,color:'#E74C3C'});
+  drawText(320,332,'TCP:3260',{size:9,color:'#E74C3C'});
+  addHit(314,308,96,36,'iscsiarrow');
+
+  // Destination PVCs
+  const pvcSel = selected==='pvc';
+  drawDisk(744,280,40,10,22,{fill:pvcSel?'#fbd9b0':'#FDEBD0',stroke:'#E67E22'});
+  drawText(720,298,'destination',{size:9});
+  drawText(730,312,'PVC-0',{size:9,bold:true});
+  drawDisk(744,340,40,10,22,{fill:pvcSel?'#fbd9b0':'#FDEBD0',stroke:'#E67E22'});
+  drawText(720,358,'destination',{size:9});
+  drawText(730,372,'PVC-1',{size:9,bold:true});
+  addHit(704,272,80,110,'pvc');
+
+  // Arrows: pod -> PVCs
+  drawArrow(640,308,704,296,{lineWidth:1.2});
+  drawArrow(640,356,704,354,{lineWidth:1.2});
+  drawText(648,288,'dd / direct I/O',{size:8});
+
+  // Step 6: v2v-in-place
+  const s6Sel = selected==='step6';
+  drawBox(820,302,148,60,{lineWidth:s6Sel?2.5:1.5,fill:s6Sel?'#ece0f5':'#F5EEF8',stroke:'#8E44AD'});
+  drawStep(836,328,'6','#8E44AD');
+  drawText(852,330,'v2v-in-place',{size:12,bold:true});
+  drawText(838,348,'(guest conversion:',{size:8,italic:true,color:'#555'});
+  drawText(838,360,' drivers + bootloader)',{size:8,italic:true,color:'#555'});
+  addCircleHit(836,328,14,'step6');
+  addHit(820,302,148,60,'step6');
+
+  drawArrow(820,322,787,302);
+  drawArrow(820,340,787,354);
+
+  // Step 8: KubeVirt VM
+  const s8Sel = selected==='step8';
+  drawBox(690,406,148,42,{lineWidth:s8Sel?2.5:1.5,fill:s8Sel?'#c5f0d5':'#D5F5E3',stroke:'#27AE60'});
+  drawStep(706,428,'8','#27AE60');
+  drawText(722,430,'KubeVirt VM',{size:12,bold:true,color:'#27AE60'});
+  addCircleHit(706,428,14,'step8');
+  addHit(690,406,148,42,'step8');
+
+  drawArrow(744,372,762,406,{stroke:'#27AE60',lineWidth:1.2});
+
+  // Performance notes
+  drawText(410,476,'Copy: pure sequential block I/O (no VHDX parsing on Linux)',{size:9,italic:true,color:'#555'});
+  drawText(410,492,'Conversion: v2v-in-place modifies PVC in place (2\u201315 min)',{size:9,italic:true,color:'#555'});
+
+  // ===== STEP SUMMARY =====
+  drawBox(18,532,964,128,{fill:'#f8f8f8',stroke:'#ccc',lineWidth:1});
+  drawText(32,552,'Step-by-step flow:',{size:12,bold:true});
+
+  drawStep(42,574,'1','#E74C3C');
+  drawText(60,578,'MTV powers off VM via WinRM, creates iSCSI targets + diff VHDXs + ACLs',{size:10});
+
+  drawStep(42,598,'2','#2E86C1');
+  drawText(60,602,'Prerequisite: iSCSI Target role installed + firewall TCP 3260 open',{size:10});
+
+  drawStep(42,622,'3','#F39C12');
+  drawText(60,626,'iSCSI Target Server exposes each VHDX as a LUN (IQN-based ACL)',{size:10});
+
+  drawStep(42,646,'4','#555');
+  drawText(60,650,'MTV creates HyperVVolumePopulator CR + PVC + populator pod',{size:10});
+
+  drawStep(550,574,'5','#E74C3C');
+  drawText(568,578,'Pod: iSCSI login \u2192 dd copy \u2192 PVC \u2192 logout',{size:10});
+
+  drawStep(550,598,'6','#8E44AD');
+  drawText(568,602,'v2v-in-place: guest conversion (drivers + bootloader)',{size:10});
+
+  drawStep(550,622,'7','#999');
+  drawText(568,626,'WinRM cleanup: remove targets + diff VHDXs',{size:10});
+
+  drawStep(550,646,'8','#27AE60');
+  drawText(568,650,'Create KubeVirt VM \u2192 boot',{size:10});
+
+  // Forklift phases
+  drawBox(18,670,964,40,{fill:'#fff',stroke:'#ccc',lineWidth:1});
+  drawText(32,688,'Forklift phases:',{size:10,bold:true});
+  drawText(32,704,'PowerOff \u2192 SetupIscsiTargets \u2192 CreateDataVolumes \u2192 CopyDisks \u2192 CleanupIscsiTargets \u2192 ConvertGuest \u2192 CreateVM \u2192 Done',{size:9,color:'#333'});
+}
+
+c.addEventListener('click', function(e) {
+  const rect = c.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  let hit = null;
+  for (let i = hitAreas.length - 1; i >= 0; i--) {
+    const a = hitAreas[i];
+    if (mx >= a.x && mx <= a.x + a.w && my >= a.y && my <= a.y + a.h) {
+      hit = a.id; break;
+    }
+  }
+
+  selected = selected === hit ? null : hit;
+  draw();
+  renderDetail();
+});
+
+function renderDetail() {
+  const el = document.getElementById('detail');
+  if (!selected || !details[selected]) {
+    el.className = 'empty';
+    el.innerHTML = 'Click any numbered step or component box to see details.';
+    return;
+  }
+  el.className = '';
+  const d = details[selected];
+  let h = `<div class="d-title">${d.title}<span class="d-pill" style="background:${d.pillColor}">${d.pill}</span></div>`;
+  h += `<div class="d-body">${d.body.replace(/\n/g,'<br>')}</div>`;
+  if (d.files) {
+    h += `<div class="d-row"><span class="d-label">Source files:</span><br>`;
+    d.files.forEach(f => { h += `<span class="d-val"><code>${f}</code></span><br>`; });
+    h += `</div>`;
+  }
+  if (d.notes) {
+    h += `<div class="d-row"><span class="d-label">Notes:</span><br><span class="d-val">${d.notes}</span></div>`;
+  }
+  el.innerHTML = h;
+}
+
+draw();
+</script>
+</body>
+</html>
