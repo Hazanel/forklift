@@ -7,6 +7,15 @@
   body { margin: 0; background: #fff; font-family: Arial, Helvetica, sans-serif; }
   #wrap { display: flex; flex-direction: column; }
   canvas { display: block; cursor: pointer; }
+  #controls { display: flex; align-items: center; gap: 8px; padding: 8px 24px; border-top: 1px solid #ddd; background: #f0f0f0; user-select: none; }
+  #controls button { border: none; background: #555; color: #fff; width: 34px; height: 34px; border-radius: 50%; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .15s; }
+  #controls button:hover { background: #333; }
+  #controls button.active { background: #E74C3C; }
+  #controls button:disabled { background: #bbb; cursor: default; }
+  #step-indicator { font-size: 13px; font-weight: 600; color: #333; min-width: 120px; }
+  #progress-track { flex: 1; height: 6px; background: #ddd; border-radius: 3px; position: relative; cursor: pointer; }
+  #progress-fill { height: 100%; background: #E74C3C; border-radius: 3px; transition: width .25s; }
+  #speed-select { font-size: 12px; padding: 2px 4px; border: 1px solid #bbb; border-radius: 4px; }
   #detail { min-height: 60px; padding: 16px 24px; border-top: 1px solid #ddd; background: #fafafa; }
   #detail.empty { color: #999; font-size: 13px; font-style: italic; }
   .d-title { font-size: 15px; font-weight: bold; margin-bottom: 6px; }
@@ -21,7 +30,21 @@
 <body>
 <div id="wrap">
 <canvas id="c"></canvas>
-<div id="detail" class="empty">Click any numbered step or component box to see details.</div>
+<div id="controls">
+  <button id="btn-rewind" title="Previous step">&#9198;</button>
+  <button id="btn-play" title="Play / Pause">&#9654;</button>
+  <button id="btn-forward" title="Next step">&#9197;</button>
+  <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  <span id="step-indicator">Step — / 8</span>
+  <label style="font-size:11px;color:#666">Speed</label>
+  <select id="speed-select">
+    <option value="0" selected>Manual</option>
+    <option value="4000">Slow</option>
+    <option value="2500">Normal</option>
+    <option value="1200">Fast</option>
+  </select>
+</div>
+<div id="detail" class="empty">Click any numbered step or component box to see details. Press &#9654; to walk through the flow.</div>
 </div>
 
 <script>
@@ -156,7 +179,7 @@ const details = {
     title:'Step 6 \u2014 virt-v2v-in-place', pill:'Step 6', pillColor:'#8E44AD',
     body:'Guest conversion: virt-v2v-in-place modifies the PVC contents in place \u2014 installs VirtIO drivers, fixes the bootloader, adjusts the Windows registry. No data copy \u2014 operates directly on the already-populated PVC.',
     files:['pkg/controller/plan/kubevirt.go:2221-2226','pkg/virt-v2v/conversion/conversion.go:163-192'],
-    notes:'For iSCSI, conversion is in-place (not the copy-based virt-v2v path). Typically 2\u201315 min regardless of disk size.'
+    notes:'For iSCSI, conversion is in-place (not the copy-based virt-v2v path).'
   },
   step7: {
     title:'Step 7 \u2014 Cleanup iSCSI Targets', pill:'Step 7', pillColor:'#999',
@@ -187,6 +210,118 @@ const details = {
 };
 
 let selected = null;
+
+const stepSequence = ['step1','step2','step3','step4','step5','iscsiarrow','progress','step6','step7','step8'];
+const stepLabels = ['1 — Power Off + iSCSI Setup','2 — iSCSI Target Feature','3 — iSCSI Target Server','4 — Create PVCs + Pod','5 — hyperv-populator Pod','Data Path — iSCSI TCP 3260','Progress Reporting','6 — virt-v2v-in-place','7 — Cleanup Targets','8 — KubeVirt VM'];
+let playIndex = -1;
+let playing = false;
+let playTimer = null;
+
+function getSpeed() { return parseInt(document.getElementById('speed-select').value, 10); }
+
+function updateControls() {
+  const playBtn = document.getElementById('btn-play');
+  playBtn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
+  playBtn.classList.toggle('active', playing);
+  document.getElementById('btn-rewind').disabled = playIndex <= 0;
+  document.getElementById('btn-forward').disabled = playIndex >= stepSequence.length - 1;
+  const pct = playIndex < 0 ? 0 : ((playIndex + 1) / stepSequence.length) * 100;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('step-indicator').textContent = playIndex < 0 ? 'Step — / ' + stepSequence.length : stepLabels[playIndex];
+}
+
+function goToStep(idx) {
+  playIndex = Math.max(-1, Math.min(idx, stepSequence.length - 1));
+  selected = playIndex >= 0 ? stepSequence[playIndex] : null;
+  draw();
+  renderDetail();
+  updateControls();
+}
+
+function playNext() {
+  if (playIndex >= stepSequence.length - 1) { stopPlay(); return; }
+  goToStep(playIndex + 1);
+}
+
+function startPlay() {
+  const speed = getSpeed();
+  if (speed === 0) {
+    goToStep(playIndex >= stepSequence.length - 1 ? 0 : playIndex + 1);
+    return;
+  }
+  playing = true;
+  updateControls();
+  if (playIndex >= stepSequence.length - 1) playIndex = -1;
+  playNext();
+  playTimer = setInterval(playNext, speed);
+}
+
+function stopPlay() {
+  playing = false;
+  clearInterval(playTimer);
+  playTimer = null;
+  updateControls();
+}
+
+function togglePlay() { playing ? stopPlay() : startPlay(); }
+
+document.getElementById('btn-play').addEventListener('click', togglePlay);
+document.getElementById('btn-forward').addEventListener('click', function() { stopPlay(); goToStep(playIndex + 1); });
+document.getElementById('btn-rewind').addEventListener('click', function() { stopPlay(); goToStep(playIndex - 1); });
+document.getElementById('speed-select').addEventListener('change', function() {
+  if (playing) {
+    clearInterval(playTimer);
+    playTimer = null;
+    const speed = getSpeed();
+    if (speed === 0) { stopPlay(); return; }
+    playTimer = setInterval(playNext, speed);
+  }
+});
+document.getElementById('progress-track').addEventListener('click', function(e) {
+  const rect = this.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  const idx = Math.round(pct * (stepSequence.length - 1));
+  stopPlay();
+  goToStep(idx);
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === ' ' || e.key === 'k') { e.preventDefault(); togglePlay(); }
+  if (e.key === 'ArrowRight' || e.key === 'l') { stopPlay(); goToStep(playIndex + 1); }
+  if (e.key === 'ArrowLeft' || e.key === 'j') { stopPlay(); goToStep(playIndex - 1); }
+});
+
+function drawHighlightRing(x, y, radius) {
+  ctx.save();
+  ctx.strokeStyle = '#E74C3C';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([6, 3]);
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawHighlightBox(x, y, w, h) {
+  ctx.save();
+  ctx.strokeStyle = '#E74C3C';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([6, 3]);
+  ctx.strokeRect(x - 3, y - 3, w + 6, h + 6);
+  ctx.restore();
+}
+
+const stepPositions = {
+  step1: { type: 'circle', x: 534, y: 112 },
+  step2: { type: 'box', x: 34, y: 244, w: 280, h: 28 },
+  step3: { type: 'box', x: 34, y: 284, w: 280, h: 106 },
+  step4: { type: 'circle', x: 490, y: 240 },
+  step5: { type: 'box', x: 410, y: 274, w: 230, h: 114 },
+  iscsiarrow: { type: 'box', x: 314, y: 308, w: 96, h: 36 },
+  progress: { type: 'box', x: 410, y: 386, w: 230, h: 12 },
+  step6: { type: 'box', x: 820, y: 302, w: 148, h: 60 },
+  step7: { type: 'box', x: 34, y: 404, w: 280, h: 40 },
+  step8: { type: 'box', x: 690, y: 406, w: 148, h: 42 },
+};
 
 function draw() {
   ctx.clearRect(0,0,W,H);
@@ -346,43 +481,52 @@ function draw() {
 
   // Performance notes
   drawText(410,476,'Copy: pure sequential block I/O (no VHDX parsing on Linux)',{size:9,italic:true,color:'#555'});
-  drawText(410,492,'Conversion: v2v-in-place modifies PVC in place (2\u201315 min)',{size:9,italic:true,color:'#555'});
+  drawText(410,492,'Conversion: v2v-in-place modifies PVC in place',{size:9,italic:true,color:'#555'});
 
   // ===== STEP SUMMARY =====
   drawBox(18,532,964,128,{fill:'#f8f8f8',stroke:'#ccc',lineWidth:1});
   drawText(32,552,'Step-by-step flow:',{size:12,bold:true});
 
-  drawStep(42,574,'1','#E74C3C');
-  drawText(60,578,'MTV powers off VM via WinRM, creates iSCSI targets + diff VHDXs + ACLs',{size:10});
-
-  drawStep(42,598,'2','#2E86C1');
-  drawText(60,602,'Prerequisite: iSCSI Target role installed + firewall TCP 3260 open',{size:10});
-
-  drawStep(42,622,'3','#F39C12');
-  drawText(60,626,'iSCSI Target Server exposes each VHDX as a LUN (IQN-based ACL)',{size:10});
-
-  drawStep(42,646,'4','#555');
-  drawText(60,650,'MTV creates HyperVVolumePopulator CR + PVC + populator pod',{size:10});
-
-  drawStep(550,574,'5','#E74C3C');
-  drawText(568,578,'Pod: iSCSI login \u2192 dd copy \u2192 PVC \u2192 logout',{size:10});
-
-  drawStep(550,598,'6','#8E44AD');
-  drawText(568,602,'v2v-in-place: guest conversion (drivers + bootloader)',{size:10});
-
-  drawStep(550,622,'7','#999');
-  drawText(568,626,'WinRM cleanup: remove targets + diff VHDXs',{size:10});
-
-  drawStep(550,646,'8','#27AE60');
-  drawText(568,650,'Create KubeVirt VM \u2192 boot',{size:10});
+  const summaryRows = [
+    { y: 564, x: 32, num: '1', color: '#E74C3C', text: 'MTV powers off VM via WinRM, creates iSCSI targets + diff VHDXs + ACLs', id: 'step1' },
+    { y: 588, x: 32, num: '2', color: '#2E86C1', text: 'Prerequisite: iSCSI Target role installed + firewall TCP 3260 open', id: 'step2' },
+    { y: 612, x: 32, num: '3', color: '#F39C12', text: 'iSCSI Target Server exposes each VHDX as a LUN (IQN-based ACL)', id: 'step3' },
+    { y: 636, x: 32, num: '4', color: '#555', text: 'MTV creates HyperVVolumePopulator CR + PVC + populator pod', id: 'step4' },
+    { y: 564, x: 540, num: '5', color: '#E74C3C', text: 'Pod: iSCSI login \u2192 dd copy \u2192 PVC \u2192 logout', id: 'step5' },
+    { y: 588, x: 540, num: '6', color: '#8E44AD', text: 'v2v-in-place: guest conversion (drivers + bootloader)', id: 'step6' },
+    { y: 612, x: 540, num: '7', color: '#999', text: 'WinRM cleanup: remove targets + diff VHDXs', id: 'step7' },
+    { y: 636, x: 540, num: '8', color: '#27AE60', text: 'Create KubeVirt VM \u2192 boot', id: 'step8' },
+  ];
+  for (const row of summaryRows) {
+    const isActive = selected === row.id;
+    if (isActive) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(231, 76, 60, 0.10)';
+      ctx.fillRect(row.x - 2, row.y - 2, 490, 22);
+      ctx.restore();
+    }
+    drawStep(row.x + 10, row.y + 10, row.num, row.color);
+    drawText(row.x + 28, row.y + 14, row.text, { size: 10, bold: isActive });
+  }
 
   // Forklift phases
   drawBox(18,670,964,40,{fill:'#fff',stroke:'#ccc',lineWidth:1});
   drawText(32,688,'Forklift phases:',{size:10,bold:true});
   drawText(32,704,'PowerOff \u2192 SetupIscsiTargets \u2192 CreateDataVolumes \u2192 CopyDisks \u2192 CleanupIscsiTargets \u2192 ConvertGuest \u2192 CreateVM \u2192 Done',{size:9,color:'#333'});
+
+  // Draw playback highlight ring around the active step
+  if (selected && stepPositions[selected]) {
+    const pos = stepPositions[selected];
+    if (pos.type === 'circle') {
+      drawHighlightRing(pos.x, pos.y, 22);
+    } else {
+      drawHighlightBox(pos.x, pos.y, pos.w, pos.h);
+    }
+  }
 }
 
 c.addEventListener('click', function(e) {
+  stopPlay();
   const rect = c.getBoundingClientRect();
   const mx = (e.clientX - rect.left) * (W / rect.width);
   const my = (e.clientY - rect.top) * (H / rect.height);
@@ -396,8 +540,10 @@ c.addEventListener('click', function(e) {
   }
 
   selected = selected === hit ? null : hit;
+  playIndex = selected ? stepSequence.indexOf(selected) : -1;
   draw();
   renderDetail();
+  updateControls();
 });
 
 function renderDetail() {
@@ -423,6 +569,7 @@ function renderDetail() {
 }
 
 draw();
+updateControls();
 </script>
 </body>
 </html>
