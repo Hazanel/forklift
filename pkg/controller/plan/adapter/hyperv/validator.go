@@ -81,9 +81,37 @@ func (r *Validator) NetworksMapped(vmRef ref.Ref) (bool, error) {
 	return true, nil
 }
 
-// NO-OP
-func (r *Validator) MaintenanceMode(_ ref.Ref) (bool, error) {
-	return true, nil
+// MaintenanceMode checks whether the VM's owner node is in a Paused or Down
+// state. In standalone mode there are no Host records, so it always returns ok.
+func (r *Validator) MaintenanceMode(vmRef ref.Ref) (bool, error) {
+	if !r.Source.Provider.IsHyperVCluster() {
+		return true, nil
+	}
+
+	vm := &hyperv.VM{}
+	err := r.Source.Inventory.Find(vm, vmRef)
+	if err != nil {
+		return false, liberr.Wrap(err, "vm", vmRef.String())
+	}
+
+	if vm.Host == "" {
+		return true, nil
+	}
+
+	host := &hyperv.Host{}
+	hostRef := ref.Ref{ID: vm.Host}
+	err = r.Source.Inventory.Find(host, hostRef)
+	if err != nil {
+		return false, liberr.Wrap(err, "vm", vmRef.String(), "host", hostRef.String())
+	}
+
+	// Block migration if the node is Paused (maintenance) or Down.
+	switch host.State {
+	case "Paused", "Down":
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 // NICNetworkRefs returns one source-network ref per VM NIC.

@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hyper-V Failover Cluster — Architecture &amp; Inventory Flow</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a2e; --muted: #6b7280;
+    --card: #f8f9fa; --border: #e2e4e9; --accent: #2563eb;
+    --green: #16a34a; --red: #dc2626; --orange: #ea580c;
+    --code-bg: #f1f3f5; --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1117; --fg: #e4e4e7; --muted: #9ca3af;
+      --card: #1c1e2a; --border: #2d2f3e; --accent: #60a5fa;
+      --green: #4ade80; --red: #f87171; --orange: #fb923c;
+      --code-bg: #1e2030;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; }
+  .container { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  h2 { font-size: 20px; font-weight: 600; margin: 40px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+  p, li { font-size: 14px; color: var(--fg); }
+  .subtitle { font-size: 15px; color: var(--muted); margin-bottom: 32px; }
+  code { font-family: var(--mono); font-size: 12px; background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 16px; border-radius: 8px; overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; margin: 12px 0; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 12px 0; }
+  .card-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .card p { font-size: 13px; color: var(--muted); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  .stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; }
+  .stat { flex: 1; min-width: 150px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; text-align: center; }
+  .stat-value { font-size: 28px; font-weight: 700; }
+  .stat-value.green { color: var(--green); }
+  .stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px; margin: 2px 4px 2px 0; }
+  .pill-accent { background: var(--accent); color: #fff; }
+  .pill-muted { background: var(--border); color: var(--fg); }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th { text-align: left; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid var(--border); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:last-child { font-weight: 600; }
+  tbody tr:hover { background: var(--card); }
+
+  .mermaid { margin: 20px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 24px; margin: 24px 0; }
+  .toc-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  .toc ol { padding-left: 20px; }
+  .toc li { font-size: 13px; margin: 4px 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Hyper-V Failover Cluster &mdash; Architecture</h1>
+<p class="subtitle">
+  Single WinRM entry point inventories an entire Windows Failover Cluster.
+  Batch PowerShell eliminates per-VM round-trips.
+</p>
+
+<div class="toc">
+  <div class="toc-title">Contents</div>
+  <ol>
+    <li><a href="#topology">Cluster Topology</a></li>
+    <li><a href="#inventory-flow">Inventory Collection Flow</a></li>
+    <li><a href="#batch-optimization">Batch Optimization</a></li>
+    <li><a href="#data-model">Data Model</a></li>
+    <li><a href="#provider-modes">Provider Modes</a></li>
+    <li><a href="#design-decisions">Key Design Decisions</a></li>
+    <li><a href="#smb-mapping">SMB Path Mapping (Cluster Mode)</a></li>
+    <li><a href="#scheduler">Per-Host Migration Scheduler</a></li>
+    <li><a href="#fallback">Fallback Strategy</a></li>
+  </ol>
+</div>
+
+<!-- ═══════════════════ 1. TOPOLOGY ═══════════════════ -->
+<h2 id="topology">1. Cluster Topology</h2>
+<p>The Forklift controller connects to a single cluster entry node via WinRM/HTTPS.
+   From that node, <code>Invoke-Command -ComputerName</code> dispatches PowerShell
+   scripts to individual cluster members.</p>
+
+<div class="mermaid">
+graph TD
+    subgraph OpenShift["<b>OpenShift Cluster</b>"]
+        FC["Forklift Controller<br/><i>inventory container</i>"]
+    end
+
+    subgraph WinCluster["<b>Windows Failover Cluster</b>"]
+        ENTRY["Entry Node<br/><i>WinRM endpoint</i>"]
+        NODE_A["HV-NODE01"]
+        NODE_B["HV-NODE02"]
+        NODE_C["HV-NODE03"]
+    end
+
+    FC -- "WinRM / HTTPS<br/>port 5986" --> ENTRY
+    ENTRY -- "Invoke-Command<br/>-ComputerName" --> NODE_A
+    ENTRY -- "Invoke-Command<br/>-ComputerName" --> NODE_B
+    ENTRY -- "Invoke-Command<br/>-ComputerName" --> NODE_C
+
+    subgraph NODE_A_VMs["Node A VMs"]
+        VM1["VM: rhel10"]
+        VM2["VM: win-2019"]
+    end
+    subgraph NODE_B_VMs["Node B VMs"]
+        VM3["VM: TestVM-03"]
+        VM4["VM: TestVM-04"]
+    end
+    subgraph NODE_C_VMs["Node C VMs"]
+        VM5["VM: db-server"]
+    end
+
+    NODE_A --> VM1 & VM2
+    NODE_B --> VM3 & VM4
+    NODE_C --> VM5
+
+    classDef ocp fill:#2563eb,stroke:#1d4ed8,color:#fff
+    classDef entry fill:#ea580c,stroke:#c2410c,color:#fff
+    classDef node fill:#16a34a,stroke:#15803d,color:#fff
+    classDef vm fill:#f8f9fa,stroke:#6b7280,color:#1a1a2e
+
+    class FC ocp
+    class ENTRY entry
+    class NODE_A,NODE_B,NODE_C node
+    class VM1,VM2,VM3,VM4,VM5 vm
+</div>
+
+<div style="margin: 8px 0;">
+  <span class="pill pill-accent">1 WinRM connection</span>
+  <span class="pill pill-muted">Invoke-Command per node</span>
+  <span class="pill pill-muted">Batch PS per node</span>
+</div>
+
+<!-- ═══════════════════ 2. INVENTORY FLOW ═══════════════════ -->
+<h2 id="inventory-flow">2. Inventory Collection Flow</h2>
+<p>The inventory reconciler runs periodically. In cluster mode, collection follows
+   this sequence diagram. Each step is a separate WinRM call.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant C as Forklift Controller
+    participant E as Entry Node (WinRM)
+    participant N1 as HV-NODE01
+    participant N2 as HV-NODE02
+
+    Note over C: Inventory reconcile triggered
+
+    C->>E: ListAllClusterDomains (ListClusterVMs script)
+    Note right of E: Entry node runs Get-VM locally,<br/>then Get-ClusterNode to discover<br/>remote nodes, then Invoke-Command<br/>-ComputerName N1/N2 -Credential $cred<br/>-ScriptBlock { Get-VM } on each
+    E->>N1: Invoke-Command { Get-VM }
+    E->>N2: Invoke-Command { Get-VM }
+    N1-->>E: [{Id, Name, State, ProcessorCount,<br/>MemoryStartup, Generation, ComputerName}]
+    N2-->>E: [{Id, Name, State, ProcessorCount,<br/>MemoryStartup, Generation, ComputerName}]
+    E-->>C: Merged flat list of all VMs<br/>with ComputerName per VM
+
+    C->>E: GetClusterVMGroups
+    Note right of E: Get-ClusterGroup |<br/>Where GroupType='VirtualMachine' |<br/>Select Name, OwnerNode, State, Id
+    E-->>C: [{Name:"rhel10", OwnerNode:"HV-NODE01"},<br/>{Name:"TestVM-03", OwnerNode:"HV-NODE02"}, ...]<br/>Sets VM.OwnerNode + VM.IsClusterRole
+
+    C->>E: GetClusterNodes
+    Note right of E: Get-ClusterNode |<br/>Select Name, State, Id<br/>(State: 0=Up, 1=Down, 2=Paused)
+    E-->>C: [{Name:"HV-NODE01", State:0},<br/>{Name:"HV-NODE02", State:0}]<br/>→ stored as Host records
+
+    C->>E: GetCluster
+    Note right of E: Get-Cluster |<br/>Select Name, Domain
+    E-->>C: {Name:"YOURCLUSTER", Domain:"corp.local"}<br/>→ stored as single Cluster record
+
+    rect rgb(230, 245, 230)
+    Note over C,N2: Batch enrichment phase (1 call per node)
+
+    C->>E: BatchGetVMHardware → N1
+    Note right of E: Invoke-Command on N1 runs:<br/>foreach VM in Get-VM:<br/>  • Get-VMSecurity → TpmEnabled<br/>  • Get-VMFirmware → SecureBoot (Gen2 only)<br/>  • Get-VMSnapshot → HasCheckpoint<br/>  • Get-VMHardDiskDrive → each disk's<br/>    Path, ControllerType/Num/Loc<br/>  • Get-VHD per disk → Capacity, RctId<br/>  • Get-VMNetworkAdapter → Name, MAC,<br/>    SwitchName, VlanId
+    N1-->>E: JSON keyed by VM name
+    E-->>C: {"rhel10":{Security:{TpmEnabled:false,<br/>SecureBoot:false}, HasCheckpoint:false,<br/>Disks:[{Path:"C:\\...vhdx", Capacity:53687091200,<br/>RCTEnabled:true, CT:0, CN:0, CL:0}],<br/>NICs:[{Name:"NIC1", MAC:"00155D...",<br/>Switch:"External", Vlan:0}]}, ...}
+
+    C->>E: BatchGetVMHardware → N2
+    E->>N2: Same script via Invoke-Command
+    N2-->>E: JSON batch result
+    E-->>C: {"TestVM-03":{...}, "TestVM-04":{...}}
+
+    C->>E: BatchGetVMGuest → N1
+    Note right of E: Invoke-Command on N1 runs<br/>(only for running VMs):<br/>  • WMI Msvm_KvpExchangeComponent<br/>    → parse GuestIntrinsicExchangeItems<br/>    → extract OSName, OSMajorVersion<br/>  • WMI Msvm_GuestNetworkAdapterConfiguration<br/>    → MAC, IPs, Subnets, DHCP, Gateways, DNS
+    N1-->>E: JSON guest data
+    E-->>C: {"rhel10":{GuestOS:"Red Hat Enterprise<br/>Linux 9", GuestNetworks:[{MAC:"00155D...",<br/>IPs:["10.0.0.5"], DHCP:false, ...}]}}
+
+    C->>E: BatchGetVMGuest → N2
+    E->>N2: Same script via Invoke-Command
+    N2-->>E: JSON guest data
+    E-->>C: {"TestVM-03":{GuestOS:"Windows Server<br/>2019 Standard", ...}}
+    end
+
+    Note over C: applyBatchDetails() merges hardware<br/>into VM structs (Disks, NICs, Security,<br/>Checkpoint), then stores Cluster, Hosts,<br/>Networks, VMs in the inventory DB
+</div>
+
+<h3>Step-by-step breakdown</h3>
+<table>
+  <thead>
+    <tr><th>#</th><th>Go function</th><th>PowerShell cmdlet(s)</th><th>What it returns</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><code>ListVMs()</code> &rarr; <code>ListAllClusterDomains()</code></td>
+      <td><code>Get-VM</code> locally + <code>Invoke-Command -ComputerName $node { Get-VM }</code> per remote node</td>
+      <td>Flat list of all VMs across the cluster with <code>Id</code>, <code>Name</code>, <code>State</code>, <code>ProcessorCount</code>, <code>MemoryStartup</code>, <code>Generation</code>, and which <code>ComputerName</code> returned each VM</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><code>enrichVMsWithOwnerNode()</code></td>
+      <td><code>Get-ClusterGroup | Where GroupType='VirtualMachine'</code></td>
+      <td>Maps each VM name to its current <code>OwnerNode</code> (the cluster node running it). Also sets <code>IsClusterRole=true</code> for VMs registered as Failover Cluster roles</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><code>ListHosts()</code></td>
+      <td><code>Get-ClusterNode</code> + <code>Invoke-Command { Get-ComputerInfo }</code> per node</td>
+      <td>Node name, state (Up/Down/Paused), CPU sockets, logical processors, total RAM. Stored as <code>Host</code> records</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><code>ListCluster()</code></td>
+      <td><code>Get-Cluster</code></td>
+      <td>Cluster name and AD domain. Stored as a single <code>Cluster</code> record</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><code>enrichVMDetails()</code> &rarr; <code>collectBatchVMDetails()</code></td>
+      <td><code>BatchGetVMHardware</code> (per node via <code>RunOnNode</code>)</td>
+      <td>Per-VM: TPM + SecureBoot, checkpoints, disk paths + capacity + RCT + controller topology, NIC name + MAC + switch + VLAN. All in one script that iterates <code>Get-VM</code> on the node</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td><code>enrichVMDetails()</code> &rarr; <code>collectBatchVMDetails()</code></td>
+      <td><code>BatchGetVMGuest</code> (per node via <code>RunOnNode</code>)</td>
+      <td>Per running VM: guest OS name (from KVP Integration Services), guest network config (MAC, IPs, subnets, DHCP, gateways, DNS via WMI <code>Msvm_GuestNetworkAdapterConfiguration</code>)</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ═══════════════════ 3. BATCH OPTIMIZATION ═══════════════════ -->
+<h2 id="batch-optimization">3. Batch Optimization</h2>
+<p>The key optimization: instead of calling <code>GetDisks</code> and <code>GetNICs</code>
+   per VM (2 &times; N calls), <code>BatchGetVMHardware</code> collects everything in
+   a single script per node.</p>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="stat-value">21</div>
+    <div class="stat-label">Before (8 VMs, 2 nodes)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value green">5</div>
+    <div class="stat-label">After (optimized)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value green">-76%</div>
+    <div class="stat-label">Round-trip reduction</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Operation</th><th>Before</th><th>After</th><th>Saved</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ListAllClusterDomains</td><td>1</td><td>1</td><td>0</td></tr>
+    <tr><td>Get-ClusterGroup (OwnerNode)</td><td>1</td><td>1</td><td>0</td></tr>
+    <tr><td>Per-VM GetDisks + GetNICs</td><td>2 &times; 8 = 16</td><td>0</td><td>16</td></tr>
+    <tr><td>BatchGetVMHardware (per node)</td><td>1 &times; 2</td><td>1 &times; 2</td><td>0</td></tr>
+    <tr><td>BatchGetVMGuest (per node)</td><td>1 &times; 2</td><td>1 &times; 2</td><td>0</td></tr>
+    <tr><td><b>Total</b></td><td><b>21</b></td><td><b>5</b></td><td><b>16</b></td></tr>
+  </tbody>
+</table>
+
+<h3>What BatchGetVMHardware collects</h3>
+<div class="mermaid">
+graph LR
+    BATCH["BatchGetVMHardware<br/><i>1 call per node</i>"]
+    BATCH --> SEC["Security<br/><code>TPM, SecureBoot</code>"]
+    BATCH --> CHK["Checkpoint<br/><code>HasCheckpoint</code>"]
+    BATCH --> DISK["Disks<br/><code>Path, Capacity, RCT,<br/>ControllerType/Num/Loc</code>"]
+    BATCH --> NIC["NICs<br/><code>Name, MAC, Switch, VLAN</code>"]
+
+    classDef batch fill:#2563eb,stroke:#1d4ed8,color:#fff
+    classDef field fill:#f8f9fa,stroke:#6b7280,color:#1a1a2e
+    class BATCH batch
+    class SEC,CHK,DISK,NIC field
+</div>
+
+<!-- ═══════════════════ 4. DATA MODEL ═══════════════════ -->
+<h2 id="data-model">4. Data Model</h2>
+
+<div class="grid-3">
+  <div class="card">
+    <div class="card-title">Cluster</div>
+    <p>One per provider (cluster mode only). Holds the Windows Failover Cluster
+       name and domain. Maps to <code>model.Cluster</code>.</p>
+  </div>
+  <div class="card">
+    <div class="card-title">Host</div>
+    <p>One per cluster node. State, CPU, memory from
+       <code>Get-ClusterNode</code>. Maps to <code>model.Host</code>.</p>
+  </div>
+  <div class="card">
+    <div class="card-title">VM (cluster fields)</div>
+    <p><code>OwnerNode</code> from <code>Get-ClusterGroup</code>.
+       <code>IsClusterRole</code> marks HA-managed VMs.
+       <code>Host</code> links to the parent Host record.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════ 5. PROVIDER MODES ═══════════════════ -->
+<h2 id="provider-modes">5. Provider Modes</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Standalone (default)</div>
+    <p><code>managementType: standalone</code> or empty</p>
+    <ul style="margin-top: 8px; padding-left: 18px; font-size: 13px;">
+      <li>Single Hyper-V host</li>
+      <li>Per-VM GetDisks / GetNICs (original behavior)</li>
+      <li>No cluster, host, or tree endpoints</li>
+      <li>No Hosts tab in UI</li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">Failover Cluster</div>
+    <p><code>managementType: cluster</code></p>
+    <ul style="margin-top: 8px; padding-left: 18px; font-size: 13px;">
+      <li>Entry node inventories all cluster members</li>
+      <li>Batch disk/NIC collection per node</li>
+      <li><code>/clusters</code>, <code>/hosts</code>, <code>/tree/host</code> REST endpoints</li>
+      <li>Hosts tab in UI shows node health</li>
+      <li>VM &rarr; OwnerNode mapping via Get-ClusterGroup</li>
+    </ul>
+  </div>
+</div>
+
+<div class="mermaid">
+flowchart LR
+    P["Provider Created"] --> CHECK{managementType?}
+    CHECK -- "standalone / empty" --> STANDALONE["Standalone Mode"]
+    CHECK -- "cluster" --> CLUSTER["Cluster Mode"]
+
+    STANDALONE --> S_LIST["ListVMs via Get-VM"]
+    S_LIST --> S_PERVM["Per-VM: GetDisks, GetNICs"]
+    S_PERVM --> S_BATCH["Batch: Security, Checkpoint, Guest"]
+    S_BATCH --> S_DB["Store in DB"]
+
+    CLUSTER --> C_LIST["ListAllClusterDomains"]
+    C_LIST --> C_OWNER["Get-ClusterGroup → OwnerNode"]
+    C_OWNER --> C_META["Get-Cluster, Get-ClusterNode"]
+    C_META --> C_BATCH["Batch per node: HW + Guest"]
+    C_BATCH --> C_DB["Store in DB<br/>(Cluster, Host, VM)"]
+
+    classDef mode fill:#2563eb,stroke:#1d4ed8,color:#fff
+    classDef check fill:#ea580c,stroke:#c2410c,color:#fff
+    class STANDALONE,CLUSTER mode
+    class CHECK check
+</div>
+
+<!-- ═══════════════════ 6. DESIGN DECISIONS ═══════════════════ -->
+<h2 id="design-decisions">6. Key Design Decisions</h2>
+
+<div class="card">
+  <div class="card-title">Double-Hop Workaround</div>
+  <p>WinRM Kerberos delegation doesn't permit a second hop from the entry node to
+     cluster members. <code>RunOnNode</code> wraps each command in
+     <code>Invoke-Command -ComputerName $node -Credential $cred</code> using
+     <code>ConvertTo-SecureString -AsPlainText -Force</code>, bypassing the
+     limitation without requiring CredSSP configuration.</p>
+</div>
+
+<div class="mermaid">
+flowchart LR
+    CTRL["Controller"] -- "WinRM" --> ENTRY["Entry Node"]
+    ENTRY -- "Invoke-Command<br/>-ComputerName NODE01<br/>-Credential $cred<br/>-ScriptBlock { ... }" --> REMOTE["Remote Node"]
+
+    classDef ctrl fill:#2563eb,stroke:#1d4ed8,color:#fff
+    classDef entry fill:#ea580c,stroke:#c2410c,color:#fff
+    classDef remote fill:#16a34a,stroke:#15803d,color:#fff
+    class CTRL ctrl
+    class ENTRY entry
+    class REMOTE remote
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <div class="card-title">Batch PowerShell Scripts</div>
+  <p><code>BatchGetVMHardware</code> iterates all VMs on a node in one script,
+     collecting security, checkpoint, disk topology + capacity + RCT, and NIC info.
+     <code>BatchGetVMGuest</code> collects guest OS and network config for running VMs.
+     Two scripts &times; N nodes instead of many scripts &times; N VMs.</p>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <div class="card-title">Graceful Fallback</div>
+  <p>If a batch call fails for a node, <code>fallbackPerVMDetails</code> falls back to
+     per-VM <code>RunOnNode</code> calls for just that node's VMs. Other nodes' batch
+     results are unaffected. Standalone mode is completely unchanged.</p>
+</div>
+
+<!-- ═══════════════════ 7. SMB PATH MAPPING ═══════════════════ -->
+<h2 id="smb-mapping">7. SMB Path Mapping (Cluster Mode)</h2>
+
+<p>In cluster mode, a VM's disk path may be either a <strong>local path</strong>
+   (e.g. <code>C:\Hyper-V\Virtual_Hard_Disks\vm.vhdx</code>) or a <strong>UNC path</strong>
+   (e.g. <code>\\SERVER\ShareName\vm.vhdx</code>) when disks reside on a remote SMB share.
+   <code>mapWindowsPathToSMB</code> handles both cases to produce the mount-relative path
+   that virt-v2v uses to access the disk.</p>
+
+<div class="mermaid">
+flowchart TD
+    INPUT["Disk path from batch/per-VM collection"] --> NORM["Normalize backslashes → forward slashes"]
+    NORM --> UNC{"Starts with //?"}
+    UNC -- "Yes" --> SPLIT["Split: //server/share/relpath"]
+    SPLIT --> MATCH{"share == provider's<br/>SMB share name?"}
+    MATCH -- "Yes" --> UNC_OK["Return smbMountPath + / + relpath<br/>e.g. /hyperv/vm.vhdx"]
+    MATCH -- "No" --> LOCAL
+    UNC -- "No" --> LOCAL{"Starts with<br/>smbWindowsPrefix?"}
+    LOCAL -- "Yes" --> LOCAL_OK["Strip prefix, return<br/>smbMountPath + / + relpath"]
+    LOCAL -- "No" --> EMPTY["Return empty (unmapped)"]
+
+    classDef ok fill:#16a34a,stroke:#15803d,color:#fff
+    classDef fail fill:#dc2626,stroke:#b91c1c,color:#fff
+    classDef decision fill:#2563eb,stroke:#1d4ed8,color:#fff
+    class UNC_OK,LOCAL_OK ok
+    class EMPTY fail
+    class UNC,MATCH,LOCAL decision
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <div class="card-title">UNC Matching</div>
+  <p>The UNC handler compares the <em>share name</em> from the path with the share name
+     extracted from the provider's SMB URL — it does <strong>not</strong> compare server
+     hostnames, which may differ between hostname and IP. A case-insensitive match on the
+     share name is sufficient since all cluster nodes reference the same share.</p>
+</div>
+
+<!-- ═══════════════════ 8. PER-HOST SCHEDULER ═══════════════════ -->
+<h2 id="scheduler">8. Per-Host Migration Scheduler</h2>
+
+<p>The Hyper-V scheduler tracks in-flight migrations <strong>per source host</strong>,
+   preventing a single node from being overloaded while allowing parallel migrations
+   from different nodes.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph "WIN-7OMEP6ERA6B (host A)"
+        VM1["rhel10"] --> SLOT_A["in-flight: 1/10"]
+    end
+    subgraph "HV-NODE02 (host B)"
+        VM2["TestVM-03"] --> SLOT_B["in-flight: 1/10"]
+    end
+    SLOT_A --> OK1["✓ proceed"]
+    SLOT_B --> OK2["✓ proceed"]
+
+    classDef host fill:#ea580c,stroke:#c2410c,color:#fff
+    classDef ok fill:#16a34a,stroke:#15803d,color:#fff
+    class SLOT_A,SLOT_B host
+    class OK1,OK2 ok
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <div class="card-title">Scheduler Details</div>
+  <ul style="margin-top:8px; padding-left:20px;">
+    <li><strong>Cost per VM</strong>: 1 (unlike vSphere which uses per-disk cost for CDI). Hyper-V uses virt-v2v (SMB) or populator (iSCSI), both per-VM.</li>
+    <li><strong>MaxInFlight</strong>: applies per host, not globally.</li>
+    <li><strong>Standalone mode</strong>: all VMs map to a single empty host key, preserving the original global counter behavior.</li>
+    <li><strong>PowerOff routing</strong>: in cluster mode, <code>Stop-VM</code> is routed to the correct node via <code>RunOnNode</code> using the VM's <code>OwnerNode</code>.</li>
+    <li><strong>MaintenanceMode</strong>: checks the host's state — blocks migration if the node is Paused or Down.</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════ 9. FALLBACK ═══════════════════ -->
+<h2 id="fallback">9. Fallback Strategy</h2>
+
+<div class="mermaid">
+flowchart TD
+    START["enrichVMDetails called"] --> GROUP["Group VMs by OwnerNode"]
+    GROUP --> BATCH_HW{"BatchGetVMHardware<br/>on node"}
+
+    BATCH_HW -- "Success" --> APPLY_HW["applyBatchDetails:<br/>build Disks[], NICs[] from batch"]
+    BATCH_HW -- "Failure" --> FALLBACK["fallbackPerVMDetails:<br/>per-VM RunOnNode calls"]
+
+    APPLY_HW --> BATCH_GUEST{"BatchGetVMGuest<br/>on node"}
+    FALLBACK --> NEXT_NODE
+
+    BATCH_GUEST -- "Success" --> APPLY_GUEST["Apply guest OS +<br/>guest networks"]
+    BATCH_GUEST -- "Failure" --> FB_GUEST["Per-VM collectGuestOS +<br/>collectGuestNetworkConfig"]
+
+    APPLY_GUEST --> NEXT_NODE{"More nodes?"}
+    FB_GUEST --> NEXT_NODE
+
+    NEXT_NODE -- "Yes" --> BATCH_HW
+    NEXT_NODE -- "No" --> DONE["Inventory complete"]
+
+    classDef success fill:#16a34a,stroke:#15803d,color:#fff
+    classDef fail fill:#dc2626,stroke:#b91c1c,color:#fff
+    classDef neutral fill:#f8f9fa,stroke:#6b7280,color:#1a1a2e
+
+    class APPLY_HW,APPLY_GUEST success
+    class FALLBACK,FB_GUEST fail
+    class START,GROUP,DONE neutral
+</div>
+
+<p style="margin-top: 16px; font-size: 13px; color: var(--muted);">
+  The fallback path routes every per-VM call through <code>RunOnNode(computerName)</code>
+  to ensure commands execute on the correct cluster member, avoiding the double-hop
+  issue even in degraded mode.
+</p>
+
+</div><!-- .container -->
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+    securityLevel: 'loose',
+    flowchart: { curve: 'basis', useMaxWidth: true },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    er: { useMaxWidth: true },
+  });
+</script>
+</body>
+</html>
