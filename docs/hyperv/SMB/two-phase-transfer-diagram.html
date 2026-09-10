@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Two-Phase Hyper-V Transfer — Detailed Design</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a1a2e; padding: 24px; max-width: 1400px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  h2 { font-size: 17px; margin-bottom: 14px; color: #1e40af; }
+  .subtitle { color: #666; font-size: 14px; margin-bottom: 32px; }
+  .section { background: #fff; border-radius: 10px; padding: 24px; border: 1px solid #e0e0e0; margin-bottom: 24px; }
+  .mermaid { margin: 0 auto; }
+  .comparison { display: flex; gap: 24px; margin-bottom: 0; }
+  .mode { flex: 1; background: #fff; border-radius: 10px; padding: 20px; border: 2px solid #e0e0e0; }
+  .mode.old { border-color: #fca5a5; }
+  .mode.new { border-color: #6ee7b7; }
+  .mode h2 { margin-bottom: 4px; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-bottom: 14px; }
+  .tag.old { background: #fee2e2; color: #991b1b; }
+  .tag.new { background: #d1fae5; color: #065f46; }
+
+  /* Pod diagram styles */
+  .pod { background: #f8fafc; border: 2.5px dashed #94a3b8; border-radius: 10px; padding: 18px; margin-top: 10px; position: relative; }
+  .pod-label { position: absolute; top: -11px; left: 14px; background: #f8fafc; padding: 0 8px; font-size: 12px; color: #475569; font-weight: 700; letter-spacing: 0.5px; }
+  .arr-section { margin-bottom: 14px; }
+  .arr-label { font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
+  .arr-items { display: flex; gap: 6px; flex-wrap: wrap; }
+  .arr-item { padding: 4px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .arr-item.smb { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+  .arr-item.target { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+  .arr-item.secret { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+  .arr-item.empty { background: #f1f5f9; color: #94a3b8; border: 1px dashed #cbd5e1; font-style: italic; }
+
+  .containers { display: flex; gap: 10px; margin-top: 14px; }
+  .container { flex: 1; border-radius: 8px; padding: 14px; }
+  .container.init { background: #eff6ff; border: 1.5px solid #93c5fd; }
+  .container.main { background: #f0fdf4; border: 1.5px solid #86efac; }
+  .container.main-only { background: #f0fdf4; border: 1.5px solid #86efac; }
+  .cname { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .container.init .cname { color: #1e40af; }
+  .container.main .cname, .container.main-only .cname { color: #065f46; }
+
+  .mount-row { display: flex; align-items: center; gap: 5px; font-size: 11px; margin-bottom: 5px; padding: 3px 6px; border-radius: 4px; background: rgba(255,255,255,0.7); font-family: 'SF Mono', 'Fira Code', monospace; }
+  .mount-row .lbl { font-weight: 400; color: #64748b; min-width: 80px; font-family: -apple-system, sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .mount-row .path { font-weight: 600; }
+  .mount-row .arrow { color: #94a3b8; }
+  .mount-row .ref { font-weight: 500; }
+  .mount-row .badge { font-size: 9px; padding: 1px 4px; border-radius: 3px; margin-left: 3px; font-family: -apple-system, sans-serif; font-weight: 700; }
+  .mount-row .ro { background: #fef3c7; color: #92400e; }
+  .mount-row .rw { background: #d1fae5; color: #065f46; }
+  .mount-row.absent { opacity: 0.35; text-decoration: line-through; }
+  .mount-row .no-x { color: #dc2626; font-weight: 800; font-size: 13px; margin-left: 3px; }
+
+  .env-row { font-size: 11px; margin-bottom: 3px; padding: 2px 6px; font-family: 'SF Mono', 'Fira Code', monospace; color: #475569; }
+  .env-row .k { color: #7c3aed; font-weight: 600; }
+
+  .cmd { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; background: #1e293b; color: #e2e8f0; padding: 8px 10px; border-radius: 5px; margin-top: 8px; white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+  .cmd .highlight { color: #60a5fa; }
+  .cmd .good { color: #34d399; }
+  .cmd .warn { color: #fbbf24; }
+
+  .flow-arrow { display: flex; align-items: center; justify-content: center; font-size: 22px; color: #94a3b8; padding: 0 2px; flex-shrink: 0; flex-direction: column; }
+  .flow-arrow .flabel { font-size: 10px; color: #64748b; margin-top: 2px; }
+
+  .data-flow { margin-top: 14px; padding: 12px; background: #fff; border-radius: 8px; border: 1px solid #e5e7eb; }
+  .data-flow h3 { font-size: 13px; margin-bottom: 8px; color: #374151; }
+  .step { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 5px; font-size: 12px; line-height: 1.4; }
+  .step-num { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 10px; color: #fff; flex-shrink: 0; }
+  .s1 { background: #2563eb; }
+  .s2 { background: #059669; }
+  .s3 { background: #7c3aed; }
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-weight: 600; }
+
+  .metrics { display: flex; gap: 14px; flex-wrap: wrap; }
+  .metric { flex: 1; min-width: 130px; text-align: center; padding: 12px; border-radius: 8px; }
+  .metric.good { background: #d1fae5; border: 1px solid #6ee7b7; }
+  .metric .val { font-size: 22px; font-weight: 700; }
+  .metric .lab { font-size: 11px; color: #64748b; margin-top: 4px; }
+
+  .code-ref { font-size: 12px; margin-top: 8px; color: #64748b; }
+  .code-ref code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #1e40af; }
+</style>
+</head>
+<body>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: { primaryColor: '#dbeafe', primaryBorderColor: '#2563eb', lineColor: '#64748b', textColor: '#1a1a2e', fontSize: '13px' } });</script>
+
+<h1>Two-Phase Hyper-V Disk Transfer — Detailed Design</h1>
+<p class="subtitle"><code>preCopySourceDisks: true</code> — Init container converts VHDX→raw via qemu-img, then virt-v2v does in-place guest customization</p>
+
+<!-- ======================================================================= -->
+<!-- SIDE BY SIDE: OLD vs NEW -->
+<!-- ======================================================================= -->
+<div class="comparison">
+
+<!-- OLD MODE -->
+<div class="mode old">
+  <h2>Normal Mode</h2>
+  <span class="tag old">preCopySourceDisks: false (default)</span>
+
+  <div class="pod">
+    <span class="pod-label">Conversion Pod</span>
+
+    <!-- Arrays -->
+    <div class="arr-section">
+      <div class="arr-label">volumes[] &amp; extraVolumes[] <span style="font-weight:400; text-transform:none;">(pod-level)</span></div>
+      <div class="arr-items">
+        <span class="arr-item smb">hyperv-storage → SMB PVC</span>
+        <span class="arr-item target">target-disk-0 → Ceph PVC</span>
+        <span class="arr-item secret">v2v-secret</span>
+      </div>
+    </div>
+    <div class="arr-section">
+      <div class="arr-label">mounts[] &amp; extraMounts[] <span style="font-weight:400; text-transform:none;">(main container)</span></div>
+      <div class="arr-items">
+        <span class="arr-item smb">hyperv-storage → /hyperv</span>
+      </div>
+    </div>
+    <div class="arr-section">
+      <div class="arr-label">devices[] <span style="font-weight:400; text-transform:none;">(main container)</span></div>
+      <div class="arr-items">
+        <span class="arr-item target">target-disk-0 → /dev/block0</span>
+      </div>
+    </div>
+
+    <!-- Single main container -->
+    <div class="containers">
+      <div class="container main-only" style="flex:1">
+        <div class="cname">virt-v2v (main container)</div>
+        <div class="mount-row">
+          <span class="lbl">Mount</span>
+          <span class="path">/hyperv</span>
+          <span class="arrow">→</span>
+          <span class="ref" style="color:#1e40af">SMB PVC</span>
+          <span class="badge ro">RO</span>
+        </div>
+        <div class="mount-row">
+          <span class="lbl">Device</span>
+          <span class="path">/dev/block0</span>
+          <span class="arrow">→</span>
+          <span class="ref" style="color:#065f46">Ceph PVC</span>
+          <span class="badge rw">RW</span>
+        </div>
+        <div class="cmd">virt-v2v -i disk /hyperv/vm.vhdx -o json ...
+<span class="warn">↑ reads VHDX over SMB — random I/O, slow for large disks</span>
+<span class="warn">↑ converts + writes to /dev/block0</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="data-flow">
+    <h3>Data Flow</h3>
+    <div class="step"><span class="step-num s1">1</span> virt-v2v reads <span class="mono">/hyperv/*.vhdx</span> over SMB (random I/O pattern)</div>
+    <div class="step"><span class="step-num s2">2</span> virt-v2v internally converts VHDX→raw and writes to <span class="mono">/dev/block0</span></div>
+    <div class="step"><span class="step-num s3">3</span> virt-v2v injects drivers, fixes bootloader, relabels SELinux</div>
+  </div>
+
+  <p class="code-ref">Code: <code>podVolumeMounts()</code> lines 3630–3638 (normal path)</p>
+</div>
+
+<!-- NEW MODE -->
+<div class="mode new">
+  <h2>Two-Phase Mode</h2>
+  <span class="tag new">preCopySourceDisks: true</span>
+
+  <div class="pod">
+    <span class="pod-label">Conversion Pod</span>
+
+    <!-- Arrays -->
+    <div class="arr-section">
+      <div class="arr-label">volumes[] &amp; extraVolumes[] <span style="font-weight:400; text-transform:none;">(pod-level)</span></div>
+      <div class="arr-items">
+        <span class="arr-item smb">hyperv-storage → SMB PVC</span>
+        <span class="arr-item target">target-disk-0 → Ceph PVC</span>
+        <span class="arr-item secret">v2v-secret</span>
+      </div>
+    </div>
+    <div class="arr-section">
+      <div class="arr-label">mounts[] &amp; extraMounts[] <span style="font-weight:400; text-transform:none;">(main container)</span></div>
+      <div class="arr-items">
+        <span class="arr-item empty">(empty — no SMB mount for main)</span>
+      </div>
+    </div>
+    <div class="arr-section">
+      <div class="arr-label">devices[] <span style="font-weight:400; text-transform:none;">(shared by init + main)</span></div>
+      <div class="arr-items">
+        <span class="arr-item target">target-disk-0 → /dev/block0</span>
+      </div>
+    </div>
+    <div class="arr-section">
+      <div class="arr-label">podConfig.ExtraInitContainers[] <span style="font-weight:400; text-transform:none;">(→ pod initContainers)</span></div>
+      <div class="arr-items">
+        <span class="arr-item" style="background:#eff6ff; color:#1e40af; border:1px solid #93c5fd;">hyperv-disk-copy</span>
+      </div>
+    </div>
+
+    <!-- Two containers -->
+    <div class="containers">
+      <div class="container init">
+        <div class="cname">hyperv-disk-copy (init container)</div>
+        <div class="mount-row">
+          <span class="lbl">Mount</span>
+          <span class="path">/hyperv</span>
+          <span class="arrow">→</span>
+          <span class="ref" style="color:#1e40af">hyperv-storage</span>
+          <span class="badge ro">RO</span>
+        </div>
+        <div class="mount-row">
+          <span class="lbl">Device</span>
+          <span class="path">/dev/block0</span>
+          <span class="arrow">→</span>
+          <span class="ref" style="color:#065f46">target-disk-0</span>
+          <span class="badge rw">RW</span>
+        </div>
+        <div style="margin-top:6px; margin-bottom:2px;">
+          <div class="env-row"><span class="k">DISK_PATHS</span>=V2V_diskPath value</div>
+          <div class="env-row"><span class="k">TARGET_DEVICES</span>=res.devices[*].DevicePath</div>
+        </div>
+        <div class="cmd">qemu-img convert -f <span class="highlight">$fmt</span> -O raw \
+  -t directsync "$src" "$dev"
+<span class="good">↑ sequential read from SMB → direct raw write to Ceph block</span>
+<span class="highlight">fmt = vhdx (for .vhdx) | vpc (for .vhd)</span></div>
+      </div>
+
+      <div class="flow-arrow">
+        <span>➡️</span>
+        <span class="flabel">then</span>
+      </div>
+
+      <div class="container main">
+        <div class="cname">virt-v2v (main container)</div>
+        <div class="mount-row absent">
+          <span class="lbl">Mount</span>
+          <span class="path">/hyperv</span>
+          <span class="arrow">→</span>
+          <span class="ref">SMB</span>
+          <span class="no-x">✘ not mounted</span>
+        </div>
+        <div class="mount-row">
+          <span class="lbl">Device</span>
+          <span class="path">/dev/block0</span>
+          <span class="arrow">→</span>
+          <span class="ref" style="color:#065f46">target-disk-0</span>
+          <span class="badge rw">RW</span>
+        </div>
+        <div style="margin-top:6px; margin-bottom:2px;">
+          <div class="env-row"><span class="k">V2V_inPlace</span>=1</div>
+        </div>
+        <div class="cmd">virt-v2v-in-place /dev/block0
+<span class="good">↑ local block device — no network I/O</span>
+<span class="good">↑ only guest customization (drivers, bootloader, SELinux)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="data-flow">
+    <h3>Data Flow</h3>
+    <div class="step"><span class="step-num s1">1</span> Init reads <span class="mono">/hyperv/*.vhdx</span> from SMB <b>sequentially</b>, converts VHDX→raw, writes to <span class="mono">/dev/block0</span></div>
+    <div class="step"><span class="step-num s2">2</span> virt-v2v-in-place operates on <span class="mono">/dev/block0</span> — <b>no network I/O</b>, just local Ceph block device</div>
+    <div class="step"><span class="step-num s3">3</span> No scratch PVC needed — storage = <b>1×</b> disk size</div>
+  </div>
+
+  <p class="code-ref">Code: <code>podVolumeMounts()</code> lines 3620–3629 &nbsp;|&nbsp; <code>buildHyperVPreCopyInitContainer()</code> line 4593 &nbsp;|&nbsp; <code>resolveConversionResources()</code> line 245</p>
+</div>
+</div>
+
+<!-- ======================================================================= -->
+<!-- CODE ARRAY FLOW DIAGRAM -->
+<!-- ======================================================================= -->
+<div class="section" style="margin-top: 24px;">
+  <h2>Code Array Flow — How Data Reaches the Pod Spec</h2>
+  <pre class="mermaid">
+flowchart TB
+  subgraph resolve["resolveConversionResources&#40;&#41;"]
+    PVM["podVolumeMounts&#40;&#41;"]
+    ARR["res.volumes<br/>res.mounts &#40;empty&#41;<br/>res.devices<br/>res.extraVolumes<br/>res.extraMounts"]
+    PVM -->|returns| ARR
+    INP["res.inPlace = true<br/>&#40;forced for HyperV + PreCopy&#41;"]
+    BIC["buildHyperVPreCopyInitContainer&#40;&amp;res&#41;"]
+    EIC["res.podConfig.<br/>ExtraInitContainers"]
+    BIC -->|appended to| EIC
+  end
+
+  subgraph decide["UseConversionCR setting"]
+    YES["Yes: Conversion CR path"]
+    NO["No: Direct pod path"]
+  end
+
+  ARR --> decide
+  EIC --> decide
+  INP --> decide
+
+  subgraph cr["Conversion CR Path"]
+    CRS["ConversionSpec<br/>ExtraVolumes<br/>ExtraMounts<br/>ExtraInitContainers"]
+    CRCTRL["Conversion Controller<br/>PodConfigFromSpec&#40;&#41;"]
+    CRS --> CRCTRL
+  end
+
+  subgraph direct["Direct Pod Path"]
+    DPOD["EnsureGuestConversionPod&#40;&#41;<br/>calls EnsureVirtV2vPod&#40;<br/>volumes, mounts, devices,<br/>secret, podConfig&#41;"]
+  end
+
+  YES --> cr
+  NO --> direct
+
+  subgraph builder["builder.go: BuildBasePod&#40;&#41;"]
+    POD["Pod.Spec<br/>Volumes: volumes<br/>InitContainers: ExtraInitContainers<br/>Containers 0: VolumeMounts,<br/>VolumeDevices, V2V_inPlace=1"]
+  end
+
+  CRCTRL --> builder
+  DPOD --> builder
+
+  style resolve fill:#f8fafc,stroke:#94a3b8,stroke-width:2px
+  style cr fill:#eff6ff,stroke:#93c5fd
+  style direct fill:#f0fdf4,stroke:#86efac
+  style builder fill:#fef3c7,stroke:#f59e0b
+  style decide fill:#f5f3ff,stroke:#8b5cf6
+  </pre>
+</div>
+
+<!-- ======================================================================= -->
+<!-- VOLUME WIRING TABLE -->
+<!-- ======================================================================= -->
+<div class="section">
+  <h2>Volume Wiring — Where Each Array Points</h2>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="background:#f1f5f9; text-align:left;">
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Go Array</th>
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Pod Spec Field</th>
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Normal Mode</th>
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Two-Phase Mode</th>
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Visible To</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>res.volumes</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>Pod.Spec.Volumes[]</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item smb" style="font-size:10px">hyperv-storage</span> <span class="arr-item target" style="font-size:10px">target-disk-0</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item smb" style="font-size:10px">hyperv-storage</span> <span class="arr-item target" style="font-size:10px">target-disk-0</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">All containers (pod-level)</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>res.mounts</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>Containers[0].VolumeMounts[]</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item smb" style="font-size:10px">/hyperv → SMB</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item empty" style="font-size:10px">(empty)</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Main container only</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>res.devices</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>Containers[0].VolumeDevices[]</code><br/><code>+ InitContainers[0].VolumeDevices[]</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item target" style="font-size:10px">/dev/block0</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item target" style="font-size:10px">/dev/block0</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Both init + main</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>res.extraVolumes</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>ConversionSpec.ExtraVolumes</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item smb" style="font-size:10px">hyperv-storage</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item smb" style="font-size:10px">hyperv-storage</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Serialized to CR → pod</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>res.extraMounts</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>ConversionSpec.ExtraMounts</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item smb" style="font-size:10px">/hyperv → SMB</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><span class="arr-item empty" style="font-size:10px">(empty)</span></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Serialized to CR → main</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;"><code>podConfig.ExtraInitContainers</code></td>
+        <td style="padding:8px;"><code>Pod.Spec.InitContainers[]</code></td>
+        <td style="padding:8px;"><span class="arr-item empty" style="font-size:10px">(none)</span></td>
+        <td style="padding:8px;"><span class="arr-item" style="font-size:10px; background:#eff6ff; color:#1e40af; border:1px solid #93c5fd;">hyperv-disk-copy</span></td>
+        <td style="padding:8px;">Runs before main container</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ======================================================================= -->
+<!-- INIT CONTAINER INTERNAL WIRING -->
+<!-- ======================================================================= -->
+<div class="section">
+  <h2>Init Container Wiring — buildHyperVPreCopyInitContainer()</h2>
+  <pre class="mermaid">
+flowchart LR
+  subgraph inputs["Inputs from res"]
+    DP["res.podConfig.Environment<br/>V2V_diskPath<br/>e.g. /hyperv/vm.vhdx"]
+    DD["res.devices<br/>DevicePath<br/>e.g. /dev/block0"]
+  end
+
+  subgraph init["Init Container Spec"]
+    ENV["Env vars:<br/>DISK_PATHS = V2V_diskPath<br/>TARGET_DEVICES = /dev/block0"]
+    VM["VolumeMounts:<br/>hyperv-storage<br/>mounted at /hyperv RO"]
+    VD["VolumeDevices:<br/>target-disk-0<br/>at /dev/block0 RW"]
+    CMD["Shell script:<br/>1. detect format from extension<br/>2. qemu-img convert -f fmt<br/>-O raw -t writeback src dev"]
+  end
+
+  DP --> ENV
+  DD --> ENV
+  ENV --> CMD
+  VM --> CMD
+  VD --> CMD
+
+  subgraph output["Result"]
+    BLK["Target PVC block device<br/>contains raw disk image<br/>ready for virt-v2v in-place"]
+  end
+
+  CMD --> BLK
+
+  style inputs fill:#f8fafc,stroke:#94a3b8
+  style init fill:#eff6ff,stroke:#93c5fd
+  style output fill:#d1fae5,stroke:#059669
+  </pre>
+
+  <p style="font-size:12px; color:#64748b; margin-top:12px;">
+    <b>Path handling:</b> <code>V2V_diskPath</code> uses <code>/hyperv/</code> as the mount prefix.
+    The init container uses the same mount point, so no path rewriting is needed.
+  </p>
+</div>
+
+<!-- ======================================================================= -->
+<!-- LIFECYCLE SEQUENCE -->
+<!-- ======================================================================= -->
+<div class="section">
+  <h2>End-to-End Lifecycle</h2>
+  <pre class="mermaid">
+sequenceDiagram
+  participant Ctrl as Plan Controller
+  participant K8s as Kubernetes
+  participant Init as hyperv-disk-copy init
+  participant V2V as virt-v2v main
+  participant SMB as SMB Share - Hyper-V
+  participant Ceph as Target PVC /dev/block0
+
+  Ctrl->>Ctrl: resolveConversionResources
+  Note over Ctrl: inPlace = true forced<br/>volumes: hyperv-storage, target-disk-0<br/>mounts: empty<br/>devices: /dev/block0<br/>ExtraInitContainers: hyperv-disk-copy
+
+  Ctrl->>K8s: Create Conversion CR or direct pod
+
+  K8s->>Init: Start init container
+  activate Init
+  Note over Init: VolumeMount: /hyperv = SMB RO<br/>VolumeDevice: /dev/block0 = Ceph RW
+
+  Init->>SMB: Sequential read /hyperv/vm.vhdx
+  Note over Init,SMB: SMB Multichannel: kernel stripes<br/>reads across N TCP channels
+  SMB-->>Init: VHDX data stream
+  Init->>Ceph: qemu-img convert -f vhdx -O raw -t directsync
+  Note over Init,Ceph: Converts VHDX to raw bytes<br/>directsync bypasses page cache
+
+  Init-->>K8s: Exit 0
+  deactivate Init
+
+  K8s->>V2V: Start main container
+  activate V2V
+  Note over V2V: VolumeDevice: /dev/block0 = Ceph RW<br/>NO SMB mount<br/>V2V_inPlace=1
+
+  V2V->>Ceph: virt-v2v-in-place /dev/block0
+  Note over V2V,Ceph: In-place guest customization<br/>Inject virtio drivers<br/>Fix bootloader GRUB/BCD<br/>Network interface config<br/>SELinux relabeling
+
+  V2V-->>K8s: Exit 0
+  deactivate V2V
+
+  K8s-->>Ctrl: Pod completed
+  Ctrl->>K8s: Create KubeVirt VM with target PVC
+  </pre>
+</div>
+
+<!-- ======================================================================= -->
+<!-- MEASURED PERFORMANCE -->
+<!-- ======================================================================= -->
+<div class="section">
+  <h2>Measured Performance — rhel10 (16 GB disk, 5.6 GB on-disk VHDX)</h2>
+  <div class="metrics">
+    <div class="metric good">
+      <div class="val">3m 45s</div>
+      <div class="lab">qemu-img convert<br/>VHDX → raw over SMB</div>
+    </div>
+    <div class="metric good">
+      <div class="val">7m 47s</div>
+      <div class="lab">virt-v2v in-place<br/>guest customization</div>
+    </div>
+    <div class="metric good">
+      <div class="val">~11.5 min</div>
+      <div class="lab">Total end-to-end<br/>migration time</div>
+    </div>
+    <div class="metric good">
+      <div class="val">1×</div>
+      <div class="lab">Storage overhead<br/>(no scratch PVC)</div>
+    </div>
+  </div>
+  <p style="font-size:12px; color:#64748b; margin-top:12px;">
+    With SMB multichannel enabled (multiple server interfaces reachable), the qemu-img phase
+    could see further speedup as the kernel stripes reads across channels.
+  </p>
+</div>
+
+<!-- ======================================================================= -->
+<!-- FORMAT DETECTION -->
+<!-- ======================================================================= -->
+<div class="section">
+  <h2>Disk Format Detection</h2>
+  <pre class="mermaid">
+flowchart LR
+  A["File extension<br/>from DISK_PATHS"] --> B{".vhdx ?"}
+  B -->|Yes| C["fmt = vhdx<br/>qemu-img -f vhdx"]
+  B -->|"No / .vhd"| D["fmt = vpc<br/>qemu-img -f vpc"]
+
+  C --> E["qemu-img convert<br/>-f fmt -O raw<br/>-t directsync<br/>src dev"]
+  D --> E
+
+  style C fill:#d1fae5,stroke:#059669
+  style D fill:#dbeafe,stroke:#2563eb
+  style E fill:#fef3c7,stroke:#d97706
+  </pre>
+  <p style="font-size:12px; color:#64748b; margin-top:8px;">
+    VHDX (Generation 2 Hyper-V) → <code>-f vhdx</code> &nbsp;|&nbsp;
+    VHD (legacy Generation 1) → <code>-f vpc</code> (QEMU's internal name for the VHD format).
+    Detection is by file extension using a <code>case</code> statement in the init container shell script.
+  </p>
+</div>
+
+<!-- ======================================================================= -->
+<!-- SMB MULTICHANNEL -->
+<!-- ======================================================================= -->
+<div class="section">
+  <h2>SMB Multichannel — Network-Level Acceleration</h2>
+  <pre class="mermaid">
+flowchart TB
+  subgraph hyperv["Hyper-V Cluster Node"]
+    SMB["SMB Server<br/>LanmanServer"]
+    NIC1["NIC 1<br/>10.37.160.163<br/>1 Gbps"]
+    NIC2["NIC 2<br/>192.168.122.x<br/>1 Gbps"]
+    NIC3["NIC 3<br/>10.x.x.x<br/>1 Gbps"]
+    SMB --- NIC1
+    SMB --- NIC2
+    SMB --- NIC3
+  end
+
+  subgraph ocp["OpenShift Worker Node"]
+    CIFS["Kernel SMB Client<br/>mount -t cifs<br/>multichannel,max_channels=8"]
+    CH1["Channel 1<br/>TCP to NIC 1"]
+    CH2["Channel 2<br/>TCP to NIC 2"]
+    CH3["Channel 3<br/>TCP to NIC 3"]
+    CIFS --- CH1
+    CIFS --- CH2
+    CIFS --- CH3
+    INIT["Init Container<br/>qemu-img convert<br/>sequential 4MB reads"]
+    INIT -->|"reads /hyperv/"| CIFS
+  end
+
+  CH1 ---|"1 Gbps"| NIC1
+  CH2 ---|"1 Gbps"| NIC2
+  CH3 ---|"1 Gbps"| NIC3
+
+  subgraph aggregate["Aggregate Throughput"]
+    AGG["3 channels x 1 Gbps<br/>= up to 3 Gbps effective<br/>= ~375 MB/s read"]
+  end
+
+  CIFS --> aggregate
+
+  style hyperv fill:#ede9fe,stroke:#8b5cf6,stroke-width:2px
+  style ocp fill:#f0fdf4,stroke:#059669,stroke-width:2px
+  style aggregate fill:#d1fae5,stroke:#059669,stroke-width:2px
+  style INIT fill:#dbeafe,stroke:#2563eb
+  style CIFS fill:#fef3c7,stroke:#d97706
+  </pre>
+
+  <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:16px;">
+    <thead>
+      <tr style="background:#f1f5f9; text-align:left;">
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Component</th>
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Configuration</th>
+        <th style="padding:10px; border-bottom:2px solid #cbd5e1;">Where</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><b>SMB PV mount options</b></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>multichannel,max_channels=8</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>kubevirt.go</code> — PV <code>mountOptions</code></td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><b>Kernel SMB client</b></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>rsize=4194304, wsize=4194304, bsize=1048576</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Negotiated by <code>mount.cifs</code> on the OCP worker</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><b>Server-side</b></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><code>Set-SmbServerConfiguration -EnableMultiChannel $true</code></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Hyper-V Windows host</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;"><b>Server interface advertisement</b></td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Multiple NICs must be routable from OCP</td>
+        <td style="padding:8px; border-bottom:1px solid #f1f5f9;">Check: <code>Get-SmbServerNetworkInterface</code></td>
+      </tr>
+      <tr>
+        <td style="padding:8px;"><b>qemu-img benefit</b></td>
+        <td style="padding:8px;">Transparent — kernel stripes large sequential reads across channels</td>
+        <td style="padding:8px;">No app-level changes needed; <code>-t directsync</code> bypasses write cache</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:12px; color:#64748b; margin-top:12px;">
+    <b>How it works:</b> The SMB PV is mounted by the kernel <code>cifs</code> driver with <code>multichannel,max_channels=8</code>.
+    When the server advertises multiple network interfaces (via <code>FSCTL_QUERY_NETWORK_INTERFACE_INFO</code>),
+    the kernel opens parallel TCP connections to each reachable interface. The <code>qemu-img convert</code>
+    sequential reads are transparently distributed across these channels by the kernel, multiplying
+    effective throughput beyond a single NIC's bandwidth. No changes to qemu-img or virt-v2v are needed —
+    multichannel operates entirely at the kernel mount layer.<br/><br/>
+    <b>Prerequisite:</b> The Hyper-V server must advertise multiple interfaces that are network-reachable
+    from the OpenShift worker nodes. Cluster-only virtual adapters or unreachable interfaces will be
+    negotiated but not used, limiting throughput to a single channel.
+  </p>
+</div>
+
+</body>
+</html>

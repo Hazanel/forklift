@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hyper-V Two-Phase SMB Migration — Interactive Component Diagram</title>
+<style>
+  body { margin: 0; background: #fff; font-family: Arial, Helvetica, sans-serif; }
+  #wrap { display: flex; flex-direction: column; }
+  canvas { display: block; cursor: pointer; }
+  #controls { display: flex; align-items: center; gap: 8px; padding: 8px 24px; border-top: 1px solid #ddd; background: #f0f0f0; user-select: none; }
+  #controls button { border: none; background: #555; color: #fff; width: 34px; height: 34px; border-radius: 50%; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .15s; }
+  #controls button:hover { background: #333; }
+  #controls button.active { background: #E74C3C; }
+  #controls button:disabled { background: #bbb; cursor: default; }
+  #step-indicator { font-size: 13px; font-weight: 600; color: #333; min-width: 120px; }
+  #progress-track { flex: 1; height: 6px; background: #ddd; border-radius: 3px; position: relative; cursor: pointer; }
+  #progress-fill { height: 100%; background: #E74C3C; border-radius: 3px; transition: width .25s; }
+  #speed-select { font-size: 12px; padding: 2px 4px; border: 1px solid #bbb; border-radius: 4px; }
+  #detail { min-height: 60px; padding: 16px 24px; border-top: 1px solid #ddd; background: #fafafa; }
+  #detail.empty { color: #999; font-size: 13px; font-style: italic; }
+  .d-title { font-size: 15px; font-weight: bold; margin-bottom: 6px; }
+  .d-pill { display: inline-block; font-size: 10px; padding: 2px 10px; border-radius: 10px; color: #fff; font-weight: 600; margin-left: 8px; vertical-align: middle; }
+  .d-body { font-size: 13px; line-height: 1.6; color: #333; }
+  .d-row { margin-top: 6px; }
+  .d-label { font-weight: 600; font-size: 12px; }
+  .d-val { font-size: 12px; color: #555; }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; background: #eee; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="c"></canvas>
+<div id="controls">
+  <button id="btn-rewind" title="Previous step">&#9198;</button>
+  <button id="btn-play" title="Play / Pause">&#9654;</button>
+  <button id="btn-forward" title="Next step">&#9197;</button>
+  <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  <span id="step-indicator">Step — / 9</span>
+  <label style="font-size:11px;color:#666">Speed</label>
+  <select id="speed-select">
+    <option value="0" selected>Manual</option>
+    <option value="4000">Slow</option>
+    <option value="2500">Normal</option>
+    <option value="1200">Fast</option>
+  </select>
+</div>
+<div id="detail" class="empty">Click any numbered step or component box to see details. Press &#9654; to walk through the flow.</div>
+</div>
+
+<!-- ===== DOCUMENTATION SECTIONS BELOW THE INTERACTIVE DIAGRAM ===== -->
+<div style="max-width:1060px;margin:0 auto;padding:24px;font-family:Arial, Helvetica, sans-serif;line-height:1.7;color:#333;">
+
+<h2 style="border-bottom:2px solid #E74C3C;padding-bottom:6px;">Configuration &amp; Prerequisites</h2>
+
+<!-- ── Plan Spec Flag ── -->
+<div style="background:#f0f7ff;border:1px solid #b3d4fc;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#1a56db;">1. Plan Spec Flag: <code>preCopySourceDisks</code></h3>
+<p>Enables the two-phase transfer for a Hyper-V migration plan. When <code>false</code> (default), the legacy flow is used (virt-v2v reads directly from SMB).</p>
+<pre style="background:#1e293b;color:#e2e8f0;padding:12px;border-radius:4px;font-size:12px;overflow-x:auto;">apiVersion: forklift.konveyor.io/v1beta1
+kind: Plan
+metadata:
+  name: my-hyperv-plan
+spec:
+  provider:
+    source: { ... }
+    destination: { ... }
+  map:
+    network: { ... }
+    storage: { ... }
+  vms:
+    - id: &lt;vm-id&gt;
+  <b style="color:#fbbf24;">preCopySourceDisks: true</b>    # Enable two-phase transfer</pre>
+<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;">
+<tr style="background:#e8f0fe;"><th style="text-align:left;padding:6px;border:1px solid #ccc;">Field</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Type</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Default</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Description</th></tr>
+<tr><td style="padding:6px;border:1px solid #ddd;"><code>preCopySourceDisks</code></td><td style="padding:6px;border:1px solid #ddd;">bool</td><td style="padding:6px;border:1px solid #ddd;">false</td><td style="padding:6px;border:1px solid #ddd;">When true, an init container converts VHDX&rarr;raw via <code>qemu-img</code> before virt-v2v runs in-place. Only applies to Hyper-V migrations.</td></tr>
+</table>
+<p style="font-size:12px;color:#555;margin-bottom:0;"><b>Source:</b> <code>pkg/apis/forklift/v1beta1/plan.go</code> line 147&ndash;154</p>
+</div>
+
+<!-- ── SMB Multichannel ── -->
+<div style="background:#fef3f2;border:1px solid #fca5a5;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#E74C3C;">2. SMB Multichannel Configuration</h3>
+<p>Multichannel is <b>optional but recommended</b> for performance. It spreads SMB reads across all available NICs. The two-phase flow's sequential I/O pattern is ideal for multichannel, the legacy flow's random I/O cannot benefit from it.</p>
+
+<h4 style="margin-bottom:4px;">Which NICs are used?</h4>
+<p style="margin-top:0;">Multichannel uses <b>all routable NICs on the Hyper-V server</b> that the OpenShift worker can reach. These are the server's global/physical NICs &mdash; the same NICs visible to every VM and service on that host. They are <b>not</b> per-VM virtual NICs. The Linux CIFS client negotiates channels with the SMB server, and the server advertises all its network interfaces. The client then opens parallel TCP connections to each reachable interface.</p>
+
+<table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;">
+<tr style="background:#fecaca;"><th colspan="2" style="text-align:left;padding:8px;border:1px solid #ccc;">Server-side (Hyper-V host) &mdash; run once per host via PowerShell</th></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;width:40%;"><b>Enable multichannel</b></td>
+<td style="padding:8px;border:1px solid #ddd;"><code>Set-SmbServerConfiguration -EnableMultiChannel $true -Force</code><br><span style="font-size:11px;color:#777;">Usually enabled by default on Windows Server 2012+.</span></td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Verify status</b></td>
+<td style="padding:8px;border:1px solid #ddd;"><code>Get-SmbServerConfiguration | Select EnableMultiChannel</code></td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Exclude unreachable interfaces</b><br><span style="font-size:11px;color:#E74C3C;">(critical for clusters)</span></td>
+<td style="padding:8px;border:1px solid #ddd;">
+<pre style="background:#1e293b;color:#e2e8f0;padding:8px;border-radius:4px;font-size:11px;margin:0;"># List all server interfaces (including hidden ones):
+Get-SmbServerNetworkInterface -IncludeHidden | ft InterfaceIndex,FriendlyName,IpAddress
+
+# Block interfaces that OCP nodes cannot reach:
+New-SmbMultichannelConstraint -ServerName * -InterfaceAlias "vEthernet (cluster-net)" -Flags Disable
+New-SmbMultichannelConstraint -ServerName * -InterfaceAlias "Loopback*" -Flags Disable</pre>
+<span style="font-size:11px;color:#555;">Without this, the server advertises cluster-only or link-local interfaces. The client tries them, they time out, and multichannel effectively uses only 1 channel.</span>
+</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Verify active channels</b></td>
+<td style="padding:8px;border:1px solid #ddd;"><code>Get-SmbMultichannelConnection | ft ServerName,ClientIpAddress,ServerIpAddress</code></td></tr>
+</table>
+
+<table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;">
+<tr style="background:#fecaca;"><th colspan="2" style="text-align:left;padding:8px;border:1px solid #ccc;">Client-side (Forklift provider settings)</th></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;width:40%;"><b>Provider setting</b></td>
+<td style="padding:8px;border:1px solid #ddd;">
+<pre style="background:#1e293b;color:#e2e8f0;padding:8px;border-radius:4px;font-size:11px;margin:0;">apiVersion: forklift.konveyor.io/v1beta1
+kind: Provider
+metadata:
+  name: my-hyperv
+spec:
+  type: hyperv
+  url: ...
+  settings:
+    <b style="color:#fbbf24;">smbMaxChannels: "8"</b>    # 0 = disabled, 1-16 = enabled</pre>
+</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>How it works</b></td>
+<td style="padding:8px;border:1px solid #ddd;">Forklift reads <code>smbMaxChannels</code> from the provider settings and adds <code>max_channels=N</code> to the CIFS mount options on the SMB PV. The Linux kernel's CIFS client then negotiates up to N channels with the server.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Default</b></td>
+<td style="padding:8px;border:1px solid #ddd;"><code>0</code> (multichannel disabled). Set to <code>8</code> for best results with 4-8 NICs.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Single NIC?</b></td>
+<td style="padding:8px;border:1px solid #ddd;">Safe to enable &mdash; CIFS falls back to a single channel automatically. No performance penalty.</td></tr>
+</table>
+<p style="font-size:12px;color:#555;margin-bottom:0;"><b>Source:</b> <code>pkg/controller/hyperv/secret.go</code> &mdash; <code>SettingSMBMaxChannels</code>, <code>SMBMountOptions()</code></p>
+</div>
+
+<!-- ── Kernel Requirements ── -->
+<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#16a34a;">3. OpenShift / Kernel Requirements</h3>
+<table style="width:100%;border-collapse:collapse;font-size:13px;">
+<tr style="background:#dcfce7;"><th style="text-align:left;padding:6px;border:1px solid #ccc;">Requirement</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Details</th></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>CIFS multichannel support</b></td><td style="padding:8px;border:1px solid #ddd;">Requires kernel CIFS module with multichannel support. RHEL 9.2+ and RHCOS (OCP 4.13+) include this. Verify: <code>modinfo cifs | grep multichannel</code> or check <code>dmesg | grep -i multichannel</code> after mount.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>CSI SMB driver</b></td><td style="padding:8px;border:1px solid #ddd;">The CSI SMB driver must be installed on the cluster. It handles mounting the SMB share as a PV with the configured mount options.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Network connectivity</b></td><td style="padding:8px;border:1px solid #ddd;">OpenShift worker nodes must be able to reach the Hyper-V host's data NICs on <b>TCP 445</b> (SMB) and <b>TCP 5986</b> (WinRM HTTPS). For multichannel, all advertised server NICs must be routable from the worker.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>qemu-img</b></td><td style="padding:8px;border:1px solid #ddd;">Included in the <code>virt-v2v</code> container image. No additional install needed.</td></tr>
+</table>
+</div>
+
+<!-- ── Windows Prerequisites ── -->
+<div style="background:#fefce8;border:1px solid #fde047;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#a16207;">4. Hyper-V Host Prerequisites</h3>
+<table style="width:100%;border-collapse:collapse;font-size:13px;">
+<tr style="background:#fef9c3;"><th style="text-align:left;padding:6px;border:1px solid #ccc;">Requirement</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Details</th></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>SMB share</b></td><td style="padding:8px;border:1px solid #ddd;">An SMB share exposing the directory containing the VM's VHDX files. Must be accessible from OpenShift worker nodes with the credentials stored in the Forklift provider secret.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>WinRM HTTPS</b></td><td style="padding:8px;border:1px solid #ddd;">WinRM must be configured for HTTPS (port 5986). Used for VM power-off and inventory queries. In cluster mode, the entry-point node routes commands to the correct owner node via <code>Invoke-Command</code>.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Firewall</b></td><td style="padding:8px;border:1px solid #ddd;">Allow inbound TCP 445 (SMB) and TCP 5986 (WinRM) from the OpenShift worker node network.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><b>Windows Server version</b></td><td style="padding:8px;border:1px solid #ddd;">Windows Server 2012 R2 or later. SMB multichannel is available since Server 2012.</td></tr>
+</table>
+</div>
+
+<!-- ── How It Works ── -->
+<div style="background:#faf5ff;border:1px solid #d8b4fe;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#7c3aed;">5. How the Two-Phase Transfer Works</h3>
+<ol style="font-size:13px;padding-left:20px;">
+<li><b>Plan Controller</b> powers off the source VM via WinRM.</li>
+<li><b>Plan Controller</b> creates a <b>deep inspection pod</b> that mounts the VM's VHDX disks from the SMB share and runs <code>virt-inspector</code> to detect the guest OS, filesystems, and applications. All disk paths are passed comma-separated — virt-inspector identifies the OS disk automatically. Results are fetched via Kubernetes <code>pods/proxy</code> subresource.</li>
+<li><b>Plan Controller</b> creates target PVC(s) with <code>volumeMode: Block</code> and a conversion pod with:
+  <ul>
+    <li><b>Init container</b> (<code>hyperv-disk-copy</code>): mounts the SMB share at <code>/hyperv</code> (read-only) and gets <code>VolumeDevices</code> for the target block device(s) (<code>/dev/block0</code>, <code>/dev/block1</code>, etc.)</li>
+    <li><b>Main container</b> (<code>virt-v2v</code>): gets the same <code>VolumeDevices</code> but does <b>NOT</b> mount the SMB share</li>
+  </ul>
+</li>
+<li><b>Init container</b> runs <code>qemu-img convert -p -f vhdx -O raw -t writeback /hyperv/vm.vhdx /dev/block0</code>, converting each VHDX from the SMB share directly to the target block device. <code>qemu-img</code> understands the VHDX Block Allocation Table, so only allocated regions are written.</li>
+<li><b>Init container exits</b>, then <b>virt-v2v starts</b> with <code>V2V_inPlace=1</code>. It performs guest customization (VirtIO drivers, bootloader, network fixup) directly on <code>/dev/block0</code>. No data copy.</li>
+<li><b>Plan Controller</b> creates the KubeVirt <code>VirtualMachine</code> CR with the populated PVC.</li>
+</ol>
+<p style="font-size:12px;color:#555;"><b>Key design decision:</b> The SMB volume is added at pod level but only mounted in the init container. virt-v2v never has access to the SMB share &mdash; it operates purely on the local block device. This prevents virt-v2v's random I/O pattern from going over SMB.</p>
+</div>
+
+<!-- ── Comparison Table ── -->
+<div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#334155;">6. Legacy vs Two-Phase Comparison</h3>
+<table style="width:100%;border-collapse:collapse;font-size:13px;">
+<tr style="background:#e2e8f0;"><th style="padding:8px;border:1px solid #ccc;"></th><th style="padding:8px;border:1px solid #ccc;">Legacy (<code>preCopySourceDisks: false</code>)</th><th style="padding:8px;border:1px solid #ccc;">Two-Phase (<code>preCopySourceDisks: true</code>)</th></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;font-weight:bold;">Data path</td><td style="padding:8px;border:1px solid #ddd;">virt-v2v reads VHDX directly from SMB</td><td style="padding:8px;border:1px solid #ddd;">Init container reads VHDX from SMB, writes raw to block device</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;font-weight:bold;">I/O pattern over SMB</td><td style="padding:8px;border:1px solid #ddd;">Random (virt-v2v internal)</td><td style="padding:8px;border:1px solid #ddd;">Sequential (qemu-img linear read)</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;font-weight:bold;">Multichannel benefit</td><td style="padding:8px;border:1px solid #ddd;">None (random I/O wastes channels)</td><td style="padding:8px;border:1px solid #ddd;">Full (sequential I/O utilizes all channels)</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;font-weight:bold;">Storage required</td><td style="padding:8px;border:1px solid #ddd;">1x (target PVC only)</td><td style="padding:8px;border:1px solid #ddd;">1x (same &mdash; no scratch PVC)</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;font-weight:bold;">virt-v2v mode</td><td style="padding:8px;border:1px solid #ddd;">Remote (copy + convert)</td><td style="padding:8px;border:1px solid #ddd;">In-place (guest customization only)</td></tr>
+<tr style="background:#f0fdf4;"><td style="padding:8px;border:1px solid #ddd;font-weight:bold;">Lab benchmark</td><td style="padding:8px;border:1px solid #ddd;">74&ndash;76 min</td><td style="padding:8px;border:1px solid #ddd;color:#16a34a;font-weight:bold;">40 min (&minus;46%)</td></tr>
+</table>
+<p style="font-size:12px;color:#555;margin-bottom:0;">Lab: 101 GB VHDX, 5 GB actual data, 5&times;1 GbE NICs, Ceph RBD storage, spinning disk on Hyper-V host.</p>
+</div>
+
+<!-- ── Troubleshooting ── -->
+<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#c2410c;">7. Troubleshooting</h3>
+<table style="width:100%;border-collapse:collapse;font-size:13px;">
+<tr style="background:#fed7aa;"><th style="text-align:left;padding:6px;border:1px solid #ccc;">Symptom</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Cause</th><th style="text-align:left;padding:6px;border:1px solid #ccc;">Fix</th></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;">Migration stuck at <code>WaitForPowerOff</code></td><td style="padding:8px;border:1px solid #ddd;">Inventory cache shows stale power state (especially in cluster mode)</td><td style="padding:8px;border:1px solid #ddd;">Fixed in latest code: <code>PowerState()</code> now performs live WinRM queries via <code>RunOnNode</code>. Verify you are on the latest controller image.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;">Init container runs but multichannel shows 1 channel</td><td style="padding:8px;border:1px solid #ddd;">Server advertising unreachable interfaces (cluster NICs, tunnel adapters)</td><td style="padding:8px;border:1px solid #ddd;">Run <code>New-SmbMultichannelConstraint</code> on the Hyper-V host to exclude unreachable interfaces. Verify with <code>Get-SmbMultichannelConnection</code>.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;">Init container slow despite multichannel</td><td style="padding:8px;border:1px solid #ddd;">Ceph write latency (if <code>-t directsync</code> was used)</td><td style="padding:8px;border:1px solid #ddd;">Ensure the code uses <code>-t writeback</code>. Check Ceph health: <code>ceph -s</code>.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;">Init container exits with error</td><td style="padding:8px;border:1px solid #ddd;">SMB mount failure or VHDX format issue</td><td style="padding:8px;border:1px solid #ddd;">Check init container logs: <code>oc logs &lt;pod&gt; -c hyperv-disk-copy</code>. Verify SMB credentials and share path.</td></tr>
+<tr><td style="padding:8px;border:1px solid #ddd;"><code>smbMaxChannels</code> has no effect</td><td style="padding:8px;border:1px solid #ddd;">Kernel CIFS module lacks multichannel support</td><td style="padding:8px;border:1px solid #ddd;">Requires OCP 4.13+ / RHCOS with RHEL 9.2+ kernel. Check: <code>dmesg | grep -i multichannel</code> on the worker node.</td></tr>
+</table>
+</div>
+
+<!-- ── Quick Reference ── -->
+<div style="background:#f1f5f9;border:1px solid #94a3b8;border-radius:6px;padding:16px;margin:16px 0;">
+<h3 style="margin-top:0;color:#475569;">Quick Reference: All Settings</h3>
+<table style="width:100%;border-collapse:collapse;font-size:12px;">
+<tr style="background:#cbd5e1;"><th style="padding:6px;border:1px solid #aaa;">Setting</th><th style="padding:6px;border:1px solid #aaa;">Where</th><th style="padding:6px;border:1px solid #aaa;">Values</th><th style="padding:6px;border:1px solid #aaa;">Purpose</th></tr>
+<tr><td style="padding:6px;border:1px solid #ddd;"><code>preCopySourceDisks</code></td><td style="padding:6px;border:1px solid #ddd;">Plan spec</td><td style="padding:6px;border:1px solid #ddd;"><code>true</code> / <code>false</code> (default)</td><td style="padding:6px;border:1px solid #ddd;">Enable two-phase transfer</td></tr>
+<tr><td style="padding:6px;border:1px solid #ddd;"><code>smbMaxChannels</code></td><td style="padding:6px;border:1px solid #ddd;">Provider settings</td><td style="padding:6px;border:1px solid #ddd;"><code>"0"</code>&ndash;<code>"16"</code> (default <code>"0"</code>)</td><td style="padding:6px;border:1px solid #ddd;">SMB multichannel channel count</td></tr>
+<tr><td style="padding:6px;border:1px solid #ddd;"><code>EnableMultiChannel</code></td><td style="padding:6px;border:1px solid #ddd;">Hyper-V host (PowerShell)</td><td style="padding:6px;border:1px solid #ddd;"><code>$true</code> / <code>$false</code></td><td style="padding:6px;border:1px solid #ddd;">Server-side multichannel</td></tr>
+<tr><td style="padding:6px;border:1px solid #ddd;"><code>SmbMultichannelConstraint</code></td><td style="padding:6px;border:1px solid #ddd;">Hyper-V host (PowerShell)</td><td style="padding:6px;border:1px solid #ddd;">per interface</td><td style="padding:6px;border:1px solid #ddd;">Exclude unreachable NICs</td></tr>
+</table>
+</div>
+
+<p style="font-size:11px;color:#999;text-align:center;margin-top:24px;">
+  Source files: <code>pkg/controller/plan/kubevirt.go</code> &middot; <code>pkg/apis/forklift/v1beta1/plan.go</code> &middot; <code>pkg/controller/hyperv/secret.go</code> &middot; <code>cmd/deep-inspection/main.go</code> &middot; <code>pkg/controller/conversion/podproxy.go</code>
+</p>
+
+</div>
+
+<script>
+const W = 1060, H = 860;
+const c = document.getElementById('c');
+const dpr = window.devicePixelRatio || 1;
+c.width = W * dpr;
+c.height = H * dpr;
+c.style.width = W + 'px';
+c.style.height = H + 'px';
+const ctx = c.getContext('2d');
+ctx.scale(dpr, dpr);
+
+function drawBox(x,y,w,h,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  if(opts.fill){ctx.fillStyle=opts.fill;ctx.fillRect(x,y,w,h);}
+  ctx.strokeRect(x,y,w,h);
+  ctx.restore();
+}
+function drawRoundBox(x,y,w,h,r,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+  if(opts.fill){ctx.fillStyle=opts.fill;ctx.fill();}
+  ctx.stroke();
+  ctx.restore();
+}
+function drawText(x,y,text,opts={}){
+  ctx.save();
+  ctx.fillStyle=opts.color||'#000';
+  ctx.font=(opts.bold?'bold ':'')+(opts.italic?'italic ':'')+(opts.size||12)+'px Arial, Helvetica, sans-serif';
+  ctx.textAlign=opts.align||'left';
+  ctx.fillText(text,x,y);
+  ctx.restore();
+}
+function drawArrow(x1,y1,x2,y2,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  if(!opts.noHead){
+    const angle=Math.atan2(y2-y1,x2-x1),hl=opts.headLen||8;
+    ctx.fillStyle=opts.stroke||'#000';
+    ctx.beginPath();ctx.moveTo(x2,y2);
+    ctx.lineTo(x2-hl*Math.cos(angle-0.4),y2-hl*Math.sin(angle-0.4));
+    ctx.lineTo(x2-hl*Math.cos(angle+0.4),y2-hl*Math.sin(angle+0.4));
+    ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+}
+function drawPolyArrow(pts,opts={}){
+  ctx.save();
+  ctx.lineWidth=opts.lineWidth||1.5;
+  ctx.strokeStyle=opts.stroke||'#000';
+  if(opts.dash) ctx.setLineDash(opts.dash);
+  ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.stroke();
+  if(!opts.noHead){
+    const last=pts[pts.length-1],prev=pts[pts.length-2];
+    const angle=Math.atan2(last[1]-prev[1],last[0]-prev[0]),hl=opts.headLen||8;
+    ctx.fillStyle=opts.stroke||'#000';
+    ctx.beginPath();ctx.moveTo(last[0],last[1]);
+    ctx.lineTo(last[0]-hl*Math.cos(angle-0.4),last[1]-hl*Math.sin(angle-0.4));
+    ctx.lineTo(last[0]-hl*Math.cos(angle+0.4),last[1]-hl*Math.sin(angle+0.4));
+    ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+}
+function drawDisk(cx,cy,rx,ry,h,opts={}){
+  const fill=opts.fill||'#fff',stroke=opts.stroke||'#000';
+  ctx.save();ctx.lineWidth=opts.lineWidth||1.5;ctx.fillStyle=fill;ctx.strokeStyle=stroke;
+  ctx.beginPath();ctx.moveTo(cx-rx,cy);ctx.lineTo(cx-rx,cy+h);
+  ctx.ellipse(cx,cy+h,rx,ry,0,Math.PI,0,true);ctx.lineTo(cx+rx,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx-rx,cy);ctx.lineTo(cx-rx,cy+h);
+  ctx.ellipse(cx,cy+h,rx,ry,0,Math.PI,0,true);ctx.lineTo(cx+rx,cy);
+  ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI,true);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);ctx.fillStyle=fill;ctx.fill();ctx.stroke();
+  ctx.restore();
+}
+function drawStep(x,y,num,color){
+  ctx.save();
+  ctx.fillStyle=color||'#E74C3C';
+  ctx.beginPath();ctx.arc(x,y,12,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font='bold 12px Arial';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(num,x,y+0.5);
+  ctx.restore();
+}
+function drawHighlightRing(x, y, radius) {
+  ctx.save();ctx.strokeStyle='#E74C3C';ctx.lineWidth=3;ctx.setLineDash([6,3]);
+  ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);ctx.stroke();ctx.restore();
+}
+function drawHighlightBox(x, y, w, h) {
+  ctx.save();ctx.strokeStyle='#E74C3C';ctx.lineWidth=3;ctx.setLineDash([6,3]);
+  ctx.strokeRect(x-3,y-3,w+6,h+6);ctx.restore();
+}
+
+const hitAreas = [];
+function addHit(x,y,w,h,id){ hitAreas.push({x,y,w,h,id}); }
+function addCircleHit(cx,cy,r,id){ hitAreas.push({x:cx-r,y:cy-r,w:r*2,h:r*2,id}); }
+
+const details = {
+  sourcevm: {
+    title:'Source VM', pill:'Hyper-V Host', pillColor:'#555',
+    body:'The original VM running on the Hyper-V host. Contains one or more VHDX/VHD virtual disks stored on an NTFS volume. The VHDX files are exposed to the OpenShift node via an SMB file share.',
+    notes:'VM must be powered off before migration. PowerState() uses live WinRM queries (RunOnNode in cluster mode) to detect power-off immediately, bypassing stale inventory cache.'
+  },
+  smbshare: {
+    title:'SMB Share (VMShare)', pill:'SMB3', pillColor:'#E67E22',
+    body:'Windows SMB file share exposing the NTFS volume containing the VHDX files. Mounted by the CSI SMB driver on the OpenShift worker node as a PVC. The mount uses SMB3.1.1 with multichannel enabled.',
+    notes:'Mount options: vers=3.1.1, multichannel, max_channels=8. The CSI SMB driver handles the mount lifecycle. Server-side multichannel constraints should exclude unreachable interfaces (cluster adapters, tunnel interfaces).'
+  },
+  multichannel: {
+    title:'SMB Multichannel', pill:'Performance', pillColor:'#E74C3C',
+    body:'SMB3 multichannel establishes multiple TCP connections across all available server NICs, parallelizing I/O. The sequential read pattern of qemu-img convert is ideal for multichannel — each channel carries a share of the read requests.',
+    notes:'Requires: (1) Server: EnableMultiChannel=True, multichannel constraints to exclude unreachable interfaces, (2) Client: kernel CIFS with multichannel support (RHEL 9.x backport), mount option multichannel,max_channels=N. Graceful degradation: if only 1 NIC exists, falls back to single channel automatically.'
+  },
+  step1: {
+    title:'Step 1 — Power Off VM', pill:'Step 1', pillColor:'#E74C3C',
+    body:'Plan Controller connects to the Hyper-V host via WinRM and powers off the source VM. In cluster mode, the Stop-VM command is routed to the correct owner node via Invoke-Command (RunOnNode).',
+    files:['pkg/controller/plan/adapter/hyperv/client.go:144-165'],
+    notes:'PowerState() performs live WinRM queries to detect power-off immediately. In cluster mode, Get-VM is routed to vm.Host via RunOnNode, avoiding "VM not found" errors when the entry-point node differs from the VM owner.'
+  },
+  step2: {
+    title:'Step 2 — Deep Inspection (Preflight)', pill:'Step 2', pillColor:'#0EA5E9',
+    body:'After power-off, if runPreflightInspection is enabled, the controller creates a deep-inspection pod that mounts all VM disks from the SMB share and runs virt-inspector to detect the guest OS, filesystems, and applications.\n\nAll disk paths are passed comma-separated via V2V_DISK_PATH. virt-inspector examines every disk and identifies which contains the OS — no assumption about boot disk ordering.',
+    files:['pkg/controller/plan/kubevirt.go:690-800 (CreateDeepInspectionConversionHyperV)','cmd/deep-inspection/main.go:70-114 (detectLocalDisks)'],
+    notes:'The deep-inspection pod runs on the destination cluster. Results are fetched via Kubernetes pods/proxy subresource (not PodIP), fixing cross-cluster networking.\n\nConversion CR is created on the management cluster with Spec.Destination pointing to the target cluster. The SMB PVC, connection secret, and inspection pod all reside in the same namespace on the destination cluster.\n\nInspection output includes: OS name/version/arch, filesystem layout, mount points, and any migration concerns.'
+  },
+  step3: {
+    title:'Step 3 — Create PVCs + Conversion Pod', pill:'Step 3', pillColor:'#555',
+    body:'Plan Controller creates the target PVC(s) with volumeMode: Block and the conversion pod. The pod spec includes:\n• An init container (hyperv-disk-copy) with the SMB volume mounted read-only at /hyperv and VolumeDevices for the target block device(s)\n• The main virt-v2v container with VolumeDevices for the same block device(s) but NO SMB mount',
+    files:['pkg/controller/plan/kubevirt.go:3618-3640 (podVolumeMounts)','pkg/controller/plan/kubevirt.go:4587-4700 (buildHyperVPreCopyInitContainer)'],
+    notes:'The SMB PVC is mounted ONLY in the init container. virt-v2v never sees the SMB share — it operates purely on the local block device. This is the key architectural separation.'
+  },
+  step4: {
+    title:'Step 4 — Init Container: qemu-img convert', pill:'Step 4', pillColor:'#2E86C1',
+    body:'The hyperv-disk-copy init container converts each VHDX from the SMB share directly to the target block device using qemu-img convert. It detects the format (.vhd → vpc, .vhdx → vhdx) and writes raw output with writeback caching.',
+    files:['pkg/controller/plan/kubevirt.go:4587-4700'],
+    notes:'Command: qemu-img convert -p -f vhdx -O raw -t writeback /hyperv/vm.vhdx /dev/block0\n\n-p: progress output\n-t writeback: async writes for higher throughput (vs directsync which blocks on each Ceph ACK)\n\nqemu-img understands the VHDX Block Allocation Table — only allocated regions are written, so a 100GB dynamic VHDX with 5GB of data writes only ~5GB to Ceph.'
+  },
+  smbarrow: {
+    title:'SMB Data Path — TCP 445', pill:'Data Plane', pillColor:'#E74C3C',
+    body:'The main data transfer path. The init container reads from /hyperv (SMB mount) using sequential I/O. SMB multichannel spreads the reads across all available channels/NICs, achieving aggregate bandwidth higher than any single link.',
+    notes:'Sequential read pattern: qemu-img reads the VHDX file linearly, which maps to large sequential SMB read requests. This is ideal for multichannel — unlike virt-v2v\'s random I/O pattern which cannot utilize multiple channels effectively.'
+  },
+  step5: {
+    title:'Step 5 — Write to Block Device', pill:'Step 5', pillColor:'#E67E22',
+    body:'qemu-img writes raw disk data directly to /dev/block0 (the target PVC exposed as a Ceph RBD block device). With -t writeback, writes are buffered by the kernel and flushed to Ceph asynchronously, avoiding per-write latency.',
+    notes:'Block volume mode: no filesystem overhead. The PVC is created with volumeMode: Block and exposed via VolumeDevices (not VolumeMounts). Direct block I/O to the Ceph RBD device.'
+  },
+  step6: {
+    title:'Step 6 — virt-v2v In-Place', pill:'Step 6', pillColor:'#8E44AD',
+    body:'After the init container completes, the main virt-v2v container starts. It performs in-place guest customization on the already-populated block device: VirtIO driver injection, bootloader fixup, network configuration, static IP preservation.',
+    files:['pkg/controller/plan/kubevirt.go:244-249 (inPlace=true)','pkg/controller/plan/kubevirt.go:367-371 (ResolveConversionType)'],
+    notes:'virt-v2v runs with V2V_inPlace=1. It never touches the SMB share — the VHDX-to-raw conversion is already done. It operates purely on /dev/block0, modifying the raw disk image in place. This is fast (~15 min) since no data copying occurs.'
+  },
+  step7: {
+    title:'Step 7 — Create KubeVirt VM', pill:'Step 7', pillColor:'#27AE60',
+    body:'The final VirtualMachine CR is created with the populated PVC as its disk. PVC ownerReferences are patched to point to the VM. Migration status is set to Succeeded. The VM boots on OpenShift Virtualization.',
+    files:['pkg/controller/plan/kubevirt.go:510-572']
+  },
+  pvc: {
+    title:'Target PVC (Block Device)', pill:'Ceph RBD', pillColor:'#E67E22',
+    body:'PersistentVolumeClaim with volumeMode: Block, backed by Ceph RBD. Exposed to the pod as /dev/block0 via VolumeDevices. Receives raw disk data from qemu-img convert, then gets in-place guest customization from virt-v2v.',
+    notes:'No scratch PVC needed — the two-phase design writes directly to the final target PVC. Storage requirement: 1x disk capacity (not 2x as a scratch-based approach would need).'
+  },
+  pod: {
+    title:'Conversion Pod Architecture', pill:'Pod Spec', pillColor:'#333',
+    body:'Single pod with two containers:\n\n1. Init container (hyperv-disk-copy):\n   • Mounts: /hyperv (SMB, read-only)\n   • VolumeDevices: /dev/block0 (target PVC)\n   • Converts VHDX → raw via qemu-img\n\n2. Main container (virt-v2v):\n   • NO SMB mount\n   • VolumeDevices: /dev/block0 (same target PVC)\n   • In-place guest customization only',
+    files:['pkg/controller/plan/kubevirt.go:3618-3640','pkg/controller/plan/kubevirt.go:4587-4700'],
+    notes:'The init container runs first and exits. Only then does virt-v2v start. The SMB volume is added at pod level for the init container but is NOT mounted in the main container — this prevents virt-v2v from attempting direct SMB access.'
+  },
+  mtv: {
+    title:'MTV (Plan Controller)', pill:'Controller', pillColor:'#555',
+    body:'The forklift Plan Controller orchestrates the entire migration. Detects Hyper-V provider type and, when preCopySourceDisks is enabled, injects the init container, forces in-place conversion, and separates the SMB mount from the main container.',
+    files:['pkg/controller/plan/kubevirt.go:244-249','pkg/controller/plan/kubevirt.go:328-334']
+  },
+  deepinspectpod: {
+    title:'Deep Inspection Pod', pill:'virt-inspector', pillColor:'#0EA5E9',
+    body:'A standalone pod that mounts the VM\'s VHDX disk(s) from the SMB share and runs virt-inspector locally. Detects guest OS, filesystem layout, applications, and potential migration concerns.\n\nThe pod runs on the destination cluster. All disk paths (comma-separated) are passed via V2V_DISK_PATH — virt-inspector examines each disk and identifies the OS disk automatically.',
+    files:['cmd/deep-inspection/main.go','pkg/controller/conversion/podproxy.go'],
+    notes:'Results are returned via the Kubernetes API server pods/proxy subresource — the controller never connects to the pod\'s IP directly. This works across clusters.\n\nThe same virt-inspector approach is used by vSphere deep inspection, ensuring consistent OS detection logic across providers.'
+  },
+  perf: {
+    title:'Performance Comparison', pill:'Benchmark', pillColor:'#E74C3C',
+    body:'Lab results (101 GB VHDX, 5 GB actual data, 5× 1GbE NICs):\n\n• Old flow (virt-v2v direct SMB, no multichannel): 74 min\n• Old flow + multichannel: 76 min (random I/O can\'t utilize channels)\n• Two-phase + directsync, no multichannel: 74 min\n• Two-phase + writeback + multichannel: 40 min (46% faster)\n\nThe sequential I/O pattern of qemu-img is the key — it\'s the only path that unlocks multichannel benefits.',
+    notes:'On production hardware (10GbE + SSD), the init container phase would be minutes instead of ~24 min. The bottleneck in the lab was the Hyper-V host\'s spinning disk I/O (~72 MB/s), not the network.'
+  }
+};
+
+let selected = null;
+const stepSequence = ['step1','step2','step3','step4','smbarrow','multichannel','step5','step6','step7','perf'];
+const stepLabels = ['1 — Power Off VM','2 — Deep Inspection','3 — Create PVCs + Pod','4 — Init: qemu-img convert','SMB Data Path','SMB Multichannel','5 — Write to Block Device','6 — virt-v2v In-Place','7 — KubeVirt VM','Performance Comparison'];
+let playIndex = -1, playing = false, playTimer = null;
+
+function getSpeed() { return parseInt(document.getElementById('speed-select').value, 10); }
+function updateControls() {
+  const b = document.getElementById('btn-play');
+  b.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
+  b.classList.toggle('active', playing);
+  document.getElementById('btn-rewind').disabled = playIndex <= 0;
+  document.getElementById('btn-forward').disabled = playIndex >= stepSequence.length - 1;
+  document.getElementById('progress-fill').style.width = (playIndex < 0 ? 0 : ((playIndex+1)/stepSequence.length)*100) + '%';
+  document.getElementById('step-indicator').textContent = playIndex < 0 ? 'Step \u2014 / '+stepSequence.length : stepLabels[playIndex];
+}
+function goToStep(idx) { playIndex=Math.max(-1,Math.min(idx,stepSequence.length-1)); selected=playIndex>=0?stepSequence[playIndex]:null; draw(); renderDetail(); updateControls(); }
+function playNext() { if(playIndex>=stepSequence.length-1){stopPlay();return;} goToStep(playIndex+1); }
+function startPlay() { const s=getSpeed(); if(s===0){goToStep(playIndex>=stepSequence.length-1?0:playIndex+1);return;} playing=true; updateControls(); if(playIndex>=stepSequence.length-1) playIndex=-1; playNext(); playTimer=setInterval(playNext,s); }
+function stopPlay() { playing=false; clearInterval(playTimer); playTimer=null; updateControls(); }
+function togglePlay() { playing ? stopPlay() : startPlay(); }
+
+document.getElementById('btn-play').addEventListener('click', togglePlay);
+document.getElementById('btn-forward').addEventListener('click', function(){ stopPlay(); goToStep(playIndex+1); });
+document.getElementById('btn-rewind').addEventListener('click', function(){ stopPlay(); goToStep(playIndex-1); });
+document.getElementById('speed-select').addEventListener('change', function(){ if(playing){clearInterval(playTimer);const s=getSpeed();if(s===0){stopPlay();return;} playTimer=setInterval(playNext,s);} });
+document.getElementById('progress-track').addEventListener('click', function(e){ const r=this.getBoundingClientRect(); stopPlay(); goToStep(Math.round(((e.clientX-r.left)/r.width)*(stepSequence.length-1))); });
+document.addEventListener('keydown', function(e){ if(e.key===' '||e.key==='k'){e.preventDefault();togglePlay();} if(e.key==='ArrowRight'||e.key==='l'){stopPlay();goToStep(playIndex+1);} if(e.key==='ArrowLeft'||e.key==='j'){stopPlay();goToStep(playIndex-1);} });
+
+const stepPositions = {
+  step1: {type:'circle',x:490,y:110},
+  step2: {type:'box',x:400,y:152,w:230,h:66},
+  step3: {type:'circle',x:570,y:268},
+  step4: {type:'box',x:420,y:330,w:250,h:130},
+  smbarrow: {type:'box',x:310,y:368,w:110,h:46},
+  multichannel: {type:'box',x:18,y:400,w:310,h:80},
+  step5: {type:'circle',x:750,y:378},
+  step6: {type:'box',x:690,y:464,w:184,h:76},
+  step7: {type:'box',x:730,y:576,w:148,h:42},
+  perf: {type:'box',x:18,y:706,w:1024,h:96}
+};
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+  hitAreas.length = 0;
+
+  drawText(18,26,'Hyper-V Two-Phase SMB Migration \u2014 Interactive Component Diagram',{size:18,bold:true});
+  drawText(18,44,'preCopySourceDisks: true \u2014 Init container converts VHDX\u2192raw via qemu-img, then virt-v2v does in-place guest customization',{size:10,italic:true,color:'#888'});
+
+  // ===== HYPER-V HOST =====
+  drawBox(18,58,310,320);
+  drawText(105,76,'Hyper-V Host',{size:13,bold:true});
+  drawText(72,92,'(Windows Server \u2014 Cluster or Standalone)',{size:9,italic:true,color:'#555'});
+
+  // Source VM
+  const vmSel = selected==='sourcevm';
+  drawBox(34,104,194,80,{fill:vmSel?'#e8f4fd':'#fff',stroke:vmSel?'#2E86C1':'#000',lineWidth:vmSel?2.5:1.5});
+  drawText(92,120,'Source VM',{size:11,bold:true});
+  drawDisk(82,130,32,8,16);
+  drawText(66,145,'VHDX',{size:9});
+  drawDisk(158,130,32,8,16);
+  drawText(142,145,'VHDX',{size:9});
+  drawText(62,178,'(powered off in step 1)',{size:8,italic:true,color:'#777'});
+  addHit(34,104,194,80,'sourcevm');
+
+  // NTFS volume
+  drawBox(34,194,194,22,{fill:'#eee',stroke:'#999',lineWidth:1});
+  drawText(96,210,'NTFS volume',{size:9});
+
+  // SMB Share
+  const smbSel = selected==='smbshare';
+  drawBox(34,228,280,60,{fill:smbSel?'#fdf2d0':'#FEF9E7',stroke:'#E67E22',lineWidth:smbSel?2.5:1.5});
+  drawText(100,248,'SMB Share',{size:12,bold:true});
+  drawText(56,264,'//host/VMShare (SMB 3.1.1)',{size:9});
+  drawText(56,280,'Server: EnableMultiChannel=True',{size:8,italic:true,color:'#777'});
+  addHit(34,228,280,60,'smbshare');
+
+  drawArrow(130,184,130,194,{noHead:true,lineWidth:1});
+  drawArrow(130,216,130,228,{lineWidth:1});
+
+  // NICs
+  const mcSel = selected==='multichannel';
+  drawBox(18,400,310,80,{fill:mcSel?'#fce4e4':'#FFF5F5',stroke:'#E74C3C',lineWidth:mcSel?2.5:1.5});
+  drawText(80,418,'SMB Multichannel',{size:12,bold:true,color:'#E74C3C'});
+  const nics = ['NIC 1','NIC 2','NIC 3','NIC 4','NIC 5'];
+  for(let i=0;i<5;i++){
+    const nx=34+i*58;
+    drawRoundBox(nx,430,50,20,4,{fill:'#fff',stroke:'#E74C3C',lineWidth:1});
+    drawText(nx+25,444,nics[i],{size:8,align:'center',bold:true,color:'#E74C3C'});
+  }
+  drawText(38,472,'8 TCP channels across 5 NICs \u2192 aggregate throughput',{size:8,italic:true,color:'#777'});
+  addHit(18,400,310,80,'multichannel');
+
+  // Multichannel arrows from share to NICs
+  drawArrow(174,288,174,400,{stroke:'#E74C3C',lineWidth:1.5,dash:[4,3]});
+
+  // ===== OPENSHIFT NODE =====
+  drawBox(378,58,664,630);
+  drawText(620,76,'OpenShift Node',{size:13,bold:true});
+
+  // MTV Controller
+  const mtvSel = selected==='mtv';
+  drawBox(618,96,130,42,{fill:mtvSel?'#e8e8e8':'#fff',lineWidth:mtvSel?2.5:1.5});
+  drawText(638,122,'MTV Controller',{size:12,bold:true});
+  addHit(618,96,130,42,'mtv');
+
+  // Step 1: WinRM
+  drawStep(490,110,'1','#E74C3C');
+  drawArrow(618,117,333,117,{lineWidth:1.5});
+  drawText(360,108,'WinRM (5986)',{size:10,bold:true});
+  drawText(340,128,'PowerOff + RunOnNode',{size:8,italic:true,color:'#555'});
+  addCircleHit(490,110,14,'step1');
+
+  // ===== Step 2: Deep Inspection =====
+  const s2Sel = selected==='step2' || selected==='deepinspectpod';
+  drawBox(400,152,230,66,{lineWidth:s2Sel?2.5:1.5,fill:s2Sel?'#dbeafe':'#EFF6FF',stroke:'#0EA5E9'});
+  drawStep(416,172,'2','#0EA5E9');
+  drawText(434,176,'Deep Inspection Pod',{size:11,bold:true,color:'#0EA5E9'});
+  drawText(412,196,'virt-inspector on SMB-mounted VHDX',{size:9});
+  drawText(412,210,'V2V_DISK_PATH: all disks (comma-sep)',{size:8,italic:true,color:'#555'});
+  addCircleHit(416,172,14,'step2');
+  addHit(400,152,230,66,'deepinspectpod');
+
+  // Arrow: MTV controller -> deep inspection pod (create)
+  drawPolyArrow([[683,138],[683,145],[630,145],[630,152]],{dash:[4,3],stroke:'#0EA5E9',lineWidth:1.2});
+  drawText(640,148,'create',{size:7,italic:true,color:'#0EA5E9'});
+
+  // Arrow: SMB -> deep inspection pod
+  drawArrow(314,258,400,185,{lineWidth:1.5,stroke:'#0EA5E9',dash:[4,3]});
+  drawText(336,216,'SMB',{size:8,bold:true,color:'#0EA5E9'});
+  drawText(336,228,'mount',{size:7,italic:true,color:'#0EA5E9'});
+
+  // Arrow: deep inspection pod -> MTV controller (results via pods/proxy)
+  drawPolyArrow([[630,185],[680,185],[700,138]],{stroke:'#0EA5E9',lineWidth:1.2});
+  drawText(642,180,'pods/proxy',{size:7,bold:true,color:'#0EA5E9'});
+  drawText(696,156,'results',{size:7,italic:true,color:'#0EA5E9'});
+
+  // Step 3: Create pod (was step 2)
+  drawStep(570,268,'3','#555');
+  drawPolyArrow([[683,138],[683,248],[570,248],[570,268]],{dash:[4,3],stroke:'#555',lineWidth:1.2,noHead:true});
+  drawText(586,262,'create PVCs +',{size:8,italic:true,color:'#555'});
+  drawText(586,274,'conversion pod',{size:8,italic:true,color:'#555'});
+  addCircleHit(570,268,14,'step3');
+
+  // ===== CONVERSION POD =====
+  const podSel = selected==='pod';
+  drawBox(400,298,300,260,{lineWidth:podSel?3:2,stroke:podSel?'#333':'#555',dash:[6,3]});
+  drawText(410,318,'Conversion Pod',{size:13,bold:true});
+  addHit(400,298,300,260,'pod');
+
+  // Init container (step 4, was step 3)
+  const s4Sel = selected==='step4';
+  drawBox(420,330,250,130,{lineWidth:s4Sel?2.5:1.5,fill:s4Sel?'#d4edfc':'#EBF5FB',stroke:'#2E86C1'});
+  drawStep(436,350,'4','#2E86C1');
+  drawText(454,354,'Init: hyperv-disk-copy',{size:11,bold:true});
+  drawText(432,376,'Mount: /hyperv (SMB, read-only)',{size:9});
+  drawText(432,392,'Device: /dev/block0 (target PVC)',{size:9});
+  drawText(432,412,'qemu-img convert -p -f vhdx',{size:9,bold:true});
+  drawText(432,426,'  -O raw -t writeback src \u2192 /dev/block0',{size:9,bold:true});
+  drawText(432,446,'Detects .vhd (vpc) vs .vhdx format',{size:8,italic:true,color:'#555'});
+  addCircleHit(436,350,14,'step4');
+  addHit(420,330,250,130,'step4');
+
+  // SMB data arrow
+  const smbArrSel = selected==='smbarrow';
+  drawArrow(314,388,420,388,{lineWidth:smbArrSel?4:3,stroke:'#E74C3C'});
+  drawText(326,376,'SMB',{size:12,bold:true,color:'#E74C3C'});
+  drawText(320,404,'TCP:445',{size:9,color:'#E74C3C'});
+  drawText(312,418,'multichannel',{size:8,italic:true,color:'#E74C3C'});
+  addHit(310,368,110,46,'smbarrow');
+
+  // Step 5: Write to block device (was step 4)
+  const s5Sel = selected==='step5';
+  drawStep(750,378,'5','#E67E22');
+  addCircleHit(750,378,14,'step5');
+
+  // Target PVC
+  const pvcSel = selected==='pvc';
+  drawDisk(826,340,48,12,26,{fill:pvcSel?'#fbd9b0':'#FDEBD0',stroke:'#E67E22',lineWidth:pvcSel?2.5:1.5});
+  drawText(798,360,'/dev/block0',{size:9,bold:true});
+  drawText(798,384,'Target PVC',{size:10,bold:true});
+  drawText(798,398,'(Ceph RBD)',{size:8,italic:true,color:'#555'});
+  drawText(798,412,'volumeMode:',{size:8,color:'#555'});
+  drawText(798,424,'Block',{size:8,bold:true,color:'#E67E22'});
+  addHit(778,330,96,100,'pvc');
+
+  // Arrow: init -> PVC
+  drawArrow(670,398,778,368,{lineWidth:1.5,stroke:'#E67E22'});
+  drawText(695,386,'raw I/O',{size:8,color:'#E67E22'});
+
+  // Step 6: virt-v2v in-place (was step 5)
+  const s6Sel = selected==='step6';
+  drawBox(690,464,184,76,{lineWidth:s6Sel?2.5:1.5,fill:s6Sel?'#ece0f5':'#F5EEF8',stroke:'#8E44AD'});
+  drawStep(706,488,'6','#8E44AD');
+  drawText(724,492,'virt-v2v in-place',{size:12,bold:true});
+  drawText(702,512,'VirtIO drivers + bootloader',{size:9});
+  drawText(702,526,'Static IP preservation',{size:9});
+  drawText(702,540,'NO SMB mount here',{size:8,italic:true,color:'#E74C3C'});
+  addCircleHit(706,488,14,'step6');
+  addHit(690,464,184,76,'step6');
+
+  // Arrow: PVC -> v2v
+  drawArrow(826,426,782,464,{lineWidth:1.2});
+  drawArrow(782,464,826,426,{lineWidth:1.2,stroke:'#8E44AD'});
+
+  // Step 7: KubeVirt VM (was step 6)
+  const s7Sel = selected==='step7';
+  drawBox(730,576,148,42,{lineWidth:s7Sel?2.5:1.5,fill:s7Sel?'#c5f0d5':'#D5F5E3',stroke:'#27AE60'});
+  drawStep(746,598,'7','#27AE60');
+  drawText(762,600,'KubeVirt VM',{size:12,bold:true,color:'#27AE60'});
+  addCircleHit(746,598,14,'step7');
+  addHit(730,576,148,42,'step7');
+
+  drawArrow(826,424,804,576,{stroke:'#27AE60',lineWidth:1.2});
+
+  // Pod labels
+  drawText(410,570,'Init completes \u2192 main container starts',{size:8,italic:true,color:'#555'});
+
+  // Flow sequence arrow: init -> v2v
+  drawPolyArrow([[545,460],[545,502],[690,502]],{stroke:'#8E44AD',lineWidth:1.2,dash:[4,3]});
+  drawText(555,494,'then',{size:8,italic:true,color:'#8E44AD'});
+
+  // ===== FORKLIFT PHASES BAR =====
+  drawBox(18,642,1024,56,{fill:'#fff',stroke:'#ccc',lineWidth:1});
+  drawText(32,662,'Forklift phases:',{size:10,bold:true});
+  drawText(32,680,'PowerOff \u2192 WaitForPowerOff \u2192 PreflightInspection \u2192 CreateDataVolumes \u2192 ConvertGuest (init: qemu-img \u2192 main: v2v-in-place) \u2192 CreateVM \u2192 Done',{size:10,color:'#333'});
+
+  // ===== PERFORMANCE BOX =====
+  const perfSel = selected==='perf';
+  drawBox(18,706,1024,96,{fill:perfSel?'#fce4e4':'#f8f8f8',stroke:perfSel?'#E74C3C':'#ccc',lineWidth:perfSel?2:1});
+  drawText(32,726,'Performance (101 GB VHDX, 5 GB data, 5\u00d71 GbE):',{size:12,bold:true});
+
+  const rows = [
+    {x:32, y:742, text:'Old flow (virt-v2v direct SMB):',val:'74 min',valColor:'#999'},
+    {x:32, y:758, text:'Old flow + multichannel:',val:'76 min  (random I/O \u2260 multichannel)',valColor:'#999'},
+    {x:32, y:774, text:'Two-phase + directsync:',val:'74 min',valColor:'#999'},
+    {x:32, y:790, text:'Two-phase + writeback + multichannel:',val:'40 min  (\u221246%)',valColor:'#27AE60'},
+  ];
+  for(const r of rows){
+    drawText(r.x,r.y,r.text,{size:10});
+    drawText(r.x+280,r.y,r.val,{size:10,bold:true,color:r.valColor});
+  }
+
+  drawText(560,742,'Key insight:',{size:10,bold:true});
+  drawText(560,758,'Sequential I/O (qemu-img) unlocks multichannel.',{size:10});
+  drawText(560,774,'Random I/O (virt-v2v direct) wastes channels.',{size:10});
+  drawText(560,790,'writeback caching eliminates Ceph per-write latency.',{size:10});
+  addHit(18,706,1024,96,'perf');
+
+  // Highlight
+  if(selected && stepPositions[selected]){
+    const p=stepPositions[selected];
+    if(p.type==='circle') drawHighlightRing(p.x,p.y,22);
+    else drawHighlightBox(p.x,p.y,p.w,p.h);
+  }
+}
+
+c.addEventListener('click', function(e){
+  stopPlay();
+  const rect=c.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(W/rect.width), my=(e.clientY-rect.top)*(H/rect.height);
+  let hit=null;
+  for(let i=hitAreas.length-1;i>=0;i--){const a=hitAreas[i];if(mx>=a.x&&mx<=a.x+a.w&&my>=a.y&&my<=a.y+a.h){hit=a.id;break;}}
+  selected = selected===hit ? null : hit;
+  playIndex = selected ? stepSequence.indexOf(selected) : -1;
+  draw(); renderDetail(); updateControls();
+});
+
+function renderDetail(){
+  const el=document.getElementById('detail');
+  if(!selected||!details[selected]){el.className='empty';el.innerHTML='Click any numbered step or component box to see details. Press &#9654; to walk through the flow.';return;}
+  el.className='';
+  const d=details[selected];
+  let h=`<div class="d-title">${d.title}<span class="d-pill" style="background:${d.pillColor}">${d.pill}</span></div>`;
+  h+=`<div class="d-body">${d.body.replace(/\n/g,'<br>')}</div>`;
+  if(d.files){h+=`<div class="d-row"><span class="d-label">Source files:</span><br>`;d.files.forEach(f=>{h+=`<span class="d-val"><code>${f}</code></span><br>`;});h+=`</div>`;}
+  if(d.notes){h+=`<div class="d-row"><span class="d-label">Notes:</span><br><span class="d-val">${d.notes.replace(/\n/g,'<br>')}</span></div>`;}
+  el.innerHTML=h;
+}
+
+draw();
+updateControls();
+</script>
+</body>
+</html>
